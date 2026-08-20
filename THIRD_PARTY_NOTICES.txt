@@ -1,0 +1,39 @@
+DSH Community Installer third-party notices
+============================================
+
+Upstream DSH
+------------
+
+The installer downloads or redistributes @deepseek-ai/dsh under its upstream
+MIT license. The package and dependency license files remain in the private
+runtime installed under %LOCALAPPDATA%\DSHCommunityInstaller\dsh.
+
+Project: https://github.com/deepseek-ai/DeepSeek-Harness
+
+Node.js
+-------
+
+The offline installer redistributes the unmodified Node.js 24.19.0 Windows x64
+archive. The online installer downloads the same archive from nodejs.org and
+verifies its pinned SHA-256. The complete Node.js LICENSE remains alongside the
+installed private runtime.
+
+License: https://github.com/nodejs/node/blob/main/LICENSE
+
+Tauri and Rust dependencies
+---------------------------
+
+The desktop controller uses Tauri 2 and Rust crates recorded in Cargo.lock.
+Their MIT, Apache-2.0, BSD, ISC, and other compatible license files remain
+available from their respective source distributions.
+
+Tauri licensing: https://github.com/tauri-apps/tauri
+
+Microsoft Edge WebView2
+-----------------------
+
+Tauri uses the Microsoft Edge WebView2 Runtime supplied by Microsoft or already
+installed with Windows. The offline installer does not redistribute a fixed
+WebView2 runtime and stops with a clear message when WebView2 is unavailable.
+
+Distribution guidance: https://learn.microsoft.com/microsoft-edge/webview2/concepts/distribution

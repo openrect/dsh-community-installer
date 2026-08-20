@@ -1,0 +1,8 @@
+DSH Community Installer - Unofficial
+
+This is an independent community installer. It is not affiliated with,
+authorized by, or endorsed by DeepSeek.
+
+The installer obtains the upstream @deepseek-ai/dsh package from npm and the
+official Node.js runtime from nodejs.org. It does not bundle API keys or
+third-party DSH plugins. Windows application builds are currently unsigned.

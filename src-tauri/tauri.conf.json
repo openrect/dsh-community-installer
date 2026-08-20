@@ -1,0 +1,54 @@
+{
+  "$schema": "https://schema.tauri.app/config/2",
+  "productName": "DSH Community Installer - Unofficial",
+  "version": "0.4.3",
+  "identifier": "io.github.openrect.dsh-community-installer",
+  "build": {
+    "beforeDevCommand": "pnpm frontend:dev",
+    "devUrl": "http://127.0.0.1:1420",
+    "beforeBuildCommand": "pnpm frontend:build",
+    "frontendDist": "../dist-ui"
+  },
+  "app": {
+    "windows": [],
+    "security": {
+      "csp": "default-src 'self'; img-src 'self' data: asset: http://asset.localhost; style-src 'self' 'unsafe-inline'; connect-src 'self' ipc: http://ipc.localhost"
+    }
+  },
+  "bundle": {
+    "active": true,
+    "targets": ["nsis"],
+    "category": "Utility",
+    "shortDescription": "Install and run upstream DSH locally.",
+    "longDescription": "An unofficial community installer and local controller for upstream DSH.",
+    "copyright": "Copyright 2026 DSH Community Installer contributors",
+    "icon": ["../assets/dsh-modern-icon.png", "../assets/dsh-modern-icon.ico"],
+    "resources": {
+      "../payload/package.json": "payload/package.json",
+      "../payload/package-lock.json": "payload/package-lock.json",
+      "../build-config.json": "build-config.json"
+    },
+    "windows": {
+      "webviewInstallMode": {
+        "type": "downloadBootstrapper"
+      },
+      "nsis": {
+        "installMode": "currentUser",
+        "installerIcon": "../assets/dsh-modern-icon.ico",
+        "languages": ["English", "SimpChinese"],
+        "displayLanguageSelector": false,
+        "startMenuFolder": "DSH Community",
+        "installerHooks": "installer-hooks-online.nsh",
+        "compression": "lzma"
+      }
+    },
+    "createUpdaterArtifacts": true
+  },
+  "plugins": {
+    "updater": {
+      "active": true,
+      "endpoints": ["https://github.com/openrect/dsh-community-installer/releases/latest/download/latest.json"],
+      "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IDQ5RDE1RUY0MTRCN0FCNDkKUldSSnE3Y1U5RjdSU1gzK0hrTi9CN0Y1VGwrMVk0bmdpV3R1SzgvMUtkWHU4MXpvRjNuU1NpbXQK"
+    }
+  }
+}

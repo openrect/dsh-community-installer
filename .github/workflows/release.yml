@@ -1,0 +1,145 @@
+name: Windows release
+
+on:
+  workflow_dispatch:
+  push:
+    tags: ["v*"]
+
+jobs:
+  build:
+    runs-on: windows-latest
+    permissions:
+      contents: read
+    outputs:
+      version: ${{ steps.release_version.outputs.version }}
+    env:
+      TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+      TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 11.19.0
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24.19.0
+          cache: pnpm
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: 1.97.1
+      - run: pnpm install --frozen-lockfile
+      - name: Resolve and validate release version
+        id: release_version
+        shell: pwsh
+        run: |
+          $version = (Get-Content "build-config.json" -Raw | ConvertFrom-Json).installerVersion
+          "version=$version" >> $env:GITHUB_OUTPUT
+          if ($env:GITHUB_REF_TYPE -eq "tag" -and $env:GITHUB_REF_NAME -ne "v$version") {
+            throw "Tag $env:GITHUB_REF_NAME does not match installer version $version."
+          }
+      - run: pnpm third-party:generate
+      - run: git diff --exit-code -- THIRD_PARTY_PACKAGES.txt
+      - run: pnpm build:online
+      - name: Smoke-test the online installer
+        shell: pwsh
+        run: |
+          function Invoke-BoundedProcess {
+            param(
+              [string] $FilePath,
+              [string[]] $ArgumentList = @(),
+              [string] $Description,
+              [int] $TimeoutSeconds = 120
+            )
+            Write-Host "$Description..."
+            $start = @{ FilePath = $FilePath; PassThru = $true }
+            if ($ArgumentList.Count -gt 0) { $start.ArgumentList = $ArgumentList }
+            $process = Start-Process @start
+            if (-not $process.WaitForExit($TimeoutSeconds * 1000)) {
+              Stop-Process -Id $process.Id -Force -ErrorAction SilentlyContinue
+              throw "$Description exceeded $TimeoutSeconds seconds."
+            }
+            if ($process.ExitCode -ne 0) {
+              throw "$Description exited with $($process.ExitCode)."
+            }
+          }
+
+          $version = "${{ steps.release_version.outputs.version }}"
+          $installer = Resolve-Path "dist/tauri/DSH-Community-Setup-$version-Windows-x64.exe"
+          Invoke-BoundedProcess -FilePath $installer -ArgumentList @("/S") -Description "Silent installer"
+          $record = Get-ChildItem "HKCU:\Software\Microsoft\Windows\CurrentVersion\Uninstall" |
+            Get-ItemProperty |
+            Where-Object DisplayName -eq "DSH Community Installer - Unofficial" |
+            Select-Object -First 1
+          if (-not $record -or -not $record.InstallLocation) { throw "The uninstall record is missing." }
+          $installRoot = $record.InstallLocation.Trim('"')
+          $application = Join-Path $installRoot "dsh-community-installer.exe"
+          if (-not (Test-Path -LiteralPath $application)) { throw "The installed application is missing." }
+          Start-Sleep -Milliseconds 500
+          $unexpected = Get-Process -Name "dsh-community-installer" -ErrorAction SilentlyContinue |
+            Where-Object Path -eq $application
+          if ($unexpected) { throw "The /S installer unexpectedly launched the application." }
+          Invoke-BoundedProcess -FilePath $application -ArgumentList @("--smoke-setup") -Description "Online first-run setup" -TimeoutSeconds 1200
+          Invoke-BoundedProcess -FilePath $application -ArgumentList @("--shutdown-for-maintenance") -Description "Maintenance shutdown" -TimeoutSeconds 30
+          $uninstaller = $record.UninstallString.Trim('"')
+          Invoke-BoundedProcess -FilePath $uninstaller -ArgumentList @("/S") -Description "Silent uninstaller"
+      - run: pnpm build:offline
+      - name: Smoke-test the offline installer entry and seed
+        shell: pwsh
+        run: |
+          function Invoke-BoundedProcess {
+            param(
+              [string] $FilePath,
+              [string[]] $ArgumentList = @(),
+              [string] $Description,
+              [int] $TimeoutSeconds = 120
+            )
+            Write-Host "$Description..."
+            $start = @{ FilePath = $FilePath; PassThru = $true }
+            if ($ArgumentList.Count -gt 0) { $start.ArgumentList = $ArgumentList }
+            $process = Start-Process @start
+            if (-not $process.WaitForExit($TimeoutSeconds * 1000)) {
+              Stop-Process -Id $process.Id -Force -ErrorAction SilentlyContinue
+              throw "$Description exceeded $TimeoutSeconds seconds."
+            }
+            if ($process.ExitCode -ne 0) { throw "$Description exited with $($process.ExitCode)." }
+          }
+
+          $version = "${{ steps.release_version.outputs.version }}"
+          $installer = Resolve-Path "dist/tauri/DSH-Community-Offline-Setup-$version-Windows-x64.exe"
+          Invoke-BoundedProcess -FilePath $installer -ArgumentList @("/S") -Description "Offline silent installer"
+          $record = Get-ChildItem "HKCU:\Software\Microsoft\Windows\CurrentVersion\Uninstall" |
+            Get-ItemProperty |
+            Where-Object DisplayName -eq "DSH Community Installer - Unofficial" |
+            Select-Object -First 1
+          if (-not $record -or -not $record.InstallLocation) { throw "The offline uninstall record is missing." }
+          $installRoot = $record.InstallLocation.Trim('"')
+          $application = Join-Path $installRoot "dsh-community-installer.exe"
+          $seed = Join-Path $installRoot "resources\runtime-seed.zip"
+          if (-not (Test-Path -LiteralPath $application)) { throw "The offline application is missing." }
+          if (-not (Test-Path -LiteralPath $seed)) { throw "The offline runtime seed is missing." }
+          Invoke-BoundedProcess -FilePath $application -ArgumentList @("--smoke-setup") -Description "Offline first-run setup" -TimeoutSeconds 600
+          Invoke-BoundedProcess -FilePath $application -ArgumentList @("--shutdown-for-maintenance") -Description "Offline maintenance shutdown" -TimeoutSeconds 30
+          $uninstaller = $record.UninstallString.Trim('"')
+          Invoke-BoundedProcess -FilePath $uninstaller -ArgumentList @("/S") -Description "Offline silent uninstaller"
+      - run: pnpm release
+      - uses: actions/upload-artifact@v4
+        with:
+          name: windows-installers
+          path: dist/tauri/*
+  release:
+    if: startsWith(github.ref, 'refs/tags/')
+    needs: build
+    runs-on: windows-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: windows-installers
+          path: release-artifacts
+      - uses: softprops/action-gh-release@v2
+        with:
+          name: DSH Community Installer ${{ needs.build.outputs.version }}
+          generate_release_notes: true
+          prerelease: false
+          files: release-artifacts/*

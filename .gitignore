@@ -1,0 +1,13 @@
+node_modules/
+build/
+dist/
+dist-ui/
+src-tauri/target/
+src-tauri/gen/
+runtime-seed/
+.smoke-appdata/
+.integration-localappdata-*/
+*.log
+.env
+.env.*
+!.env.example

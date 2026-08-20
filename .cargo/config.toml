@@ -1,0 +1,3 @@
+[target.'cfg(windows)']
+# MSVC emits a localized informational line while producing import libraries.
+rustflags = ["-A", "linker-messages"]

@@ -1,0 +1,71 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1200 560" role="img" aria-labelledby="title description">
+  <title id="title">DSH Community Installer</title>
+  <desc id="description">A clean, lightweight Windows installer for upstream DSH.</desc>
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="1200" y2="560" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#050b13"/><stop offset=".58" stop-color="#081525"/><stop offset="1" stop-color="#0a3158"/>
+    </linearGradient>
+    <linearGradient id="accent" x1="0" y1="0" x2="1" y2="1"><stop stop-color="#4d6bfe"/><stop offset="1" stop-color="#35d1e3"/></linearGradient>
+    <radialGradient id="glow"><stop stop-color="#3b8bd7" stop-opacity=".38"/><stop offset="1" stop-color="#3b8bd7" stop-opacity="0"/></radialGradient>
+    <filter id="shadow" x="-30%" y="-30%" width="160%" height="180%"><feDropShadow dx="0" dy="28" stdDeviation="28" flood-color="#000814" flood-opacity=".62"/></filter>
+    <pattern id="grid" width="72" height="72" patternUnits="userSpaceOnUse"><path d="M72 0H0V72" fill="none" stroke="#79b0e0" stroke-opacity=".1"/></pattern>
+    <symbol id="mark" viewBox="0 0 1024 1024">
+      <path d="M176 812V212H350C490 212 548 326 548 512S490 812 350 812H176" fill="none" stroke="#4D6BFE" stroke-width="104" stroke-linecap="round" stroke-linejoin="round"/>
+      <path d="M714 212V812M868 212V812M714 512H868" fill="none" stroke="#4D6BFE" stroke-width="104" stroke-linecap="round" stroke-linejoin="round"/>
+      <path d="M650 286C596 224 470 228 430 326C398 404 458 452 542 496C638 546 676 624 628 708C578 792 456 804 372 744" fill="none" stroke="url(#accent)" stroke-width="98" stroke-linecap="round" stroke-linejoin="round"/>
+    </symbol>
+  </defs>
+  <rect width="1200" height="560" rx="15" fill="url(#bg)"/>
+  <rect width="1200" height="560" rx="15" fill="url(#grid)"/>
+  <circle cx="970" cy="230" r="370" fill="url(#glow)"/>
+  <g font-family="Segoe UI Variable Text, Segoe UI, sans-serif">
+    <use href="#mark" x="46" y="40" width="42" height="42"/>
+    <text x="103" y="67" fill="#f8fbff" font-size="18" font-weight="600" letter-spacing="2">DSH COMMUNITY INSTALLER</text>
+    <rect x="402" y="46" width="105" height="28" rx="14" fill="#101c2b" stroke="#cde1f2" stroke-opacity=".25"/>
+    <text x="454.5" y="65" text-anchor="middle" fill="#a9bed1" font-size="12" font-weight="500" letter-spacing="1">UNOFFICIAL</text>
+    <text x="46" y="173" fill="#f8fbff" font-size="54" font-weight="600" letter-spacing="-2">Clean DSH setup.</text>
+    <text x="46" y="233" fill="#72b9ff" font-size="54" font-weight="600" letter-spacing="-2">Small by design.</text>
+    <text x="46" y="281" fill="#b1c0d0" font-size="16" font-weight="400">Private runtime, verified components, and no bundled</text>
+    <text x="46" y="307" fill="#b1c0d0" font-size="16" font-weight="400">third-party DSH plugins.</text>
+    <g font-size="14">
+      <g><rect x="46" y="342" width="146" height="104" rx="15" fill="#0c1725" fill-opacity=".88" stroke="#c3def6" stroke-opacity=".18"/><text x="62" y="374" fill="#f8fbff" font-weight="600">Clean install</text><text x="62" y="402" fill="#8fa3b8">No API keys or</text><text x="62" y="423" fill="#8fa3b8">bundled plugins.</text></g>
+      <g><rect x="204" y="342" width="146" height="104" rx="15" fill="#0c1725" fill-opacity=".88" stroke="#c3def6" stroke-opacity=".18"/><text x="220" y="374" fill="#f8fbff" font-weight="600">Small online setup</text><text x="220" y="402" fill="#8fa3b8">Only verified</text><text x="220" y="423" fill="#8fa3b8">components.</text></g>
+      <g><rect x="362" y="342" width="146" height="104" rx="15" fill="#0c1725" fill-opacity=".88" stroke="#c3def6" stroke-opacity=".18"/><text x="378" y="374" fill="#f8fbff" font-weight="600">Controlled updates</text><text x="378" y="402" fill="#8fa3b8">Stage, verify,</text><text x="378" y="423" fill="#8fa3b8">then activate.</text></g>
+      <g fill="#c1cfdd"><rect x="46" y="472" width="132" height="34" rx="15" fill="#0a131f" stroke="#c3def6" stroke-opacity=".2"/><text x="112" y="494" text-anchor="middle">Windows 10 / 11</text><rect x="188" y="472" width="70" height="34" rx="15" fill="#0a131f" stroke="#c3def6" stroke-opacity=".2"/><text x="223" y="494" text-anchor="middle">Online</text><rect x="268" y="472" width="72" height="34" rx="15" fill="#0a131f" stroke="#c3def6" stroke-opacity=".2"/><text x="304" y="494" text-anchor="middle">Offline</text><rect x="350" y="472" width="72" height="34" rx="15" fill="#0a131f" stroke="#c3def6" stroke-opacity=".2"/><text x="386" y="494" text-anchor="middle">Tauri 2</text></g>
+    </g>
+    <g transform="translate(588 68) rotate(-1 286 190)" filter="url(#shadow)">
+      <rect width="572" height="390" rx="15" fill="#0a3761" stroke="#bddff9" stroke-opacity=".34"/>
+      <rect width="572" height="58" rx="15" fill="#061c31" fill-opacity=".76"/><path d="M0 58H572" stroke="#c7e6ff" stroke-opacity=".12"/>
+      <use href="#mark" x="22" y="12" width="34" height="34"/>
+      <rect x="455" y="14" width="72" height="30" rx="15" fill="#122c44" stroke="#a9cae5" stroke-opacity=".3"/>
+      <rect x="489" y="16" width="36" height="26" rx="13" fill="#4f6fff"/><text x="471" y="34" text-anchor="middle" fill="#a9bed1" font-size="14">中</text><text x="507" y="34" text-anchor="middle" fill="#fff" font-size="14" font-weight="600">EN</text>
+      <text x="544" y="36" fill="#a8bed1" font-size="18">×</text>
+      <g transform="translate(82 94)">
+        <rect width="408" height="238" rx="15" fill="#061a2d" fill-opacity=".92" stroke="#c7dcee" stroke-opacity=".26"/>
+        <text x="28" y="39" fill="#8fccf8" font-size="14" font-weight="600" letter-spacing="1">ONLINE SETUP</text>
+        <text x="28" y="78" fill="#f8fbff" font-size="24" font-weight="600">Install Harness</text>
+        <text x="28" y="109" fill="#b8cadb" font-size="14">Private Node.js and verified upstream DSH.</text>
+        <text x="28" y="147" fill="#d7e4ef" font-size="14">Create desktop shortcut</text>
+        <rect x="330" y="129" width="48" height="26" rx="13" fill="#4d6bfe"/><circle cx="365" cy="142" r="9" fill="#fff"/>
+        <rect x="28" y="174" width="350" height="42" rx="15" fill="#f7f9fb"/>
+        <text x="203" y="200" text-anchor="middle" fill="#14202b" font-size="14" font-weight="600">Start setup</text>
+      </g>
+    </g>
+    <g transform="translate(891 175) rotate(1.5 126 152)" filter="url(#shadow)">
+      <rect width="252" height="304" rx="15" fill="#11161d" stroke="#bddff9" stroke-opacity=".32"/>
+      <circle cx="25" cy="29" r="5" fill="#4ce0b3"/><text x="40" y="35" fill="#72b9ff" font-size="14" font-weight="600">Harness 0.1.0-rc.7</text>
+      <path d="M14 53H238M14 129H238M14 213H238M14 263H238" stroke="#dcecff" stroke-opacity=".14"/>
+      <g fill="#f8fbff" font-size="14" font-weight="400">
+        <text x="26" y="82">Open Harness</text>
+        <text x="26" y="112">Open logs</text>
+        <text x="26" y="158">Check for updates</text>
+        <text x="26" y="190">Auto-download updates</text>
+        <text x="26" y="290">Exit Harness</text>
+      </g>
+      <circle cx="224" cy="185" r="10" fill="#4d6bfe"/><path d="M219 185l3 3 6-7" fill="none" stroke="#fff" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+      <rect x="14" y="221" width="224" height="34" rx="15" fill="#0b1118" stroke="#a9cae5" stroke-opacity=".28"/>
+      <rect x="125" y="223" width="111" height="30" rx="15" fill="#4d6bfe"/>
+      <text x="70" y="243" text-anchor="middle" fill="#9db0c1" font-size="14">中文</text><text x="180" y="243" text-anchor="middle" fill="#fff" font-size="14" font-weight="600">EN</text>
+    </g>
+  </g>
+</svg>
