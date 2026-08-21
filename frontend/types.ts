@@ -12,7 +12,7 @@ export interface AppState {
   nodeVersion: string;
   locale: Locale;
   edition: Edition;
-  autoDownload: boolean;
+  autoCheckDshUpdates: boolean;
   setupPhase: SetupPhase;
   servicePhase: ServicePhase;
   setupComplete: boolean;
@@ -26,6 +26,12 @@ export interface SetupProgress {
   percent: number;
   messageKey: string;
   detail?: string;
+  resolvedItems?: number;
+  reusedItems?: number;
+  downloadedItems?: number;
+  addedItems?: number;
+  totalItems?: number;
+  elapsedSeconds?: number;
 }
 
 export interface ServiceState {
@@ -44,5 +50,11 @@ export interface UpdateState {
   phase: UpdatePhase;
   version?: string;
   progress?: number;
+  resolvedItems?: number;
+  reusedItems?: number;
+  downloadedItems?: number;
+  addedItems?: number;
+  totalItems?: number;
+  elapsedSeconds?: number;
   messageKey: string;
 }

@@ -29,11 +29,16 @@ try {
   throw error;
 }
 const requestedPrompt = query.get("prompt");
-let promptKind: "update" | "update-result" | "exit" | "cancel-setup" = requestedPrompt === "cancel-setup"
+const stateUpdatePromptKind: "update" | "update-result" = state.update?.phase === "ready" || state.update?.phase === "available"
+  ? "update"
+  : "update-result";
+let promptKind: "update" | "update-result" | "pause-update" | "exit" | "cancel-setup" = requestedPrompt === "cancel-setup"
   ? "cancel-setup"
   : requestedPrompt === "exit"
     ? "exit"
-  : requestedPrompt === "update" || state.update?.phase === "ready" || state.update?.phase === "available" ? "update" : "exit";
+    : requestedPrompt === "update"
+      ? stateUpdatePromptKind
+      : state.update?.phase === "ready" || state.update?.phase === "available" ? "update" : "exit";
 
 class SubscriptionScope {
   private readonly unsubscribers: Array<() => void> = [];
@@ -94,18 +99,77 @@ function shell(content: string, titleOptions: Parameters<typeof titlebar>[0] = {
 }
 
 function isIndeterminateSetup(messageKey: string): boolean {
-  return messageKey !== "node";
+  return !["node", "preparingPackageManager", "resolvingDependencies", "installingPackages", "runningInstallScripts"].includes(messageKey);
 }
 
-function progressSurface(title: string, copy: string, percent: number, actions = "", indeterminate = false): string {
+function progressSurface(title: string, copy: string, percent: number, actions = "", indeterminate = false, status = ""): string {
   const safePercent = Math.max(0, Math.min(100, percent));
   return `<section class="surface" data-setup-progress>
     <h1 id="setup-progress-title">${escape(title)}</h1>
     <p class="copy" id="setup-progress-copy">${escape(copy)}</p>
     <div class="progress-track${indeterminate ? " indeterminate" : ""}" id="setup-progress-track"><div class="progress-bar" id="setup-progress-bar" style="width:${safePercent}%"></div></div>
-    <div class="progress-value" id="setup-progress-value">${indeterminate ? text("working") : `${Math.round(safePercent)}%`}</div>
+    <div class="progress-value" id="setup-progress-value">${status || (indeterminate ? text("working") : `${Math.round(safePercent)}%`)}</div>
     ${actions}
   </section>`;
+}
+
+function updateWork(): { title: string; copy: string } {
+  const version = state.update?.version ?? state.dshVersion;
+  switch (state.update?.messageKey) {
+    case "preparingUpdate":
+      return { title: text("preparingUpdate", { version }), copy: text("preparingUpdateCopy") };
+    case "downloadingUpdate":
+      return { title: text("downloadingUpdate", { version }), copy: text("downloadingUpdateCopy") };
+    case "preparingPackageManager":
+      return { title: text("preparingPackageManager"), copy: text("preparingPackageManagerCopy") };
+    case "resolvingDependencies":
+      return { title: text("resolvingDependencies", { version }), copy: text("resolvingDependenciesCopy") };
+    case "installingPackages":
+      return { title: text("installingPackages", { version }), copy: text("installingPackagesCopy") };
+    case "runningInstallScripts":
+      return { title: text("runningInstallScripts", { version }), copy: text("runningInstallScriptsCopy") };
+    case "verifyingUpdate":
+      return { title: text("verifyingUpdate", { version }), copy: text("verifyingUpdateCopy") };
+    case "validatingUpdate":
+      return { title: text("validatingUpdate"), copy: text("validatingUpdateCopy") };
+    case "restartingUpdate":
+      return { title: text("restartingUpdate"), copy: text("restartingUpdateCopy") };
+    case "testingUpdate":
+      return { title: text("testingUpdate"), copy: text("testingUpdateCopy") };
+    case "activatingUpdate":
+      return { title: text("activatingUpdate"), copy: text("activatingUpdateCopy") };
+    case "updateComplete":
+      return { title: text("updateComplete"), copy: text("updateCompleteCopy") };
+    case "installingUpdate":
+      return { title: text("installingUpdate"), copy: text("setupWorkingCopy") };
+    default:
+      return { title: text("checkingUpdates"), copy: text("checkingUpdatesCopy") };
+  }
+}
+
+function updateProgressStatus(): string {
+  const percent = Math.round(Math.max(0, Math.min(100, state.update?.progress ?? 0)));
+  const details = [`${percent}%`];
+  const update = state.update;
+  const showsPackageCounts = update
+    && ["resolvingDependencies", "installingPackages"].includes(update.messageKey);
+  if (showsPackageCounts && [update.resolvedItems, update.downloadedItems, update.addedItems, update.totalItems].some((value) => value !== undefined)) {
+    details.push(text("resolvedItems", { count: String(update.resolvedItems ?? 0) }));
+    details.push(text("downloadedItems", { count: String(update.downloadedItems ?? 0) }));
+    details.push(text("addedItems", { count: String(update.addedItems ?? 0) }));
+  }
+  return details.join(" · ");
+}
+
+function setupProgressStatus(event: SetupProgress): string {
+  const details = [`${Math.round(Math.max(0, Math.min(100, event.percent)))}%`];
+  const showsPackageCounts = ["resolvingDependencies", "installingPackages"].includes(event.messageKey);
+  if (showsPackageCounts && [event.resolvedItems, event.downloadedItems, event.addedItems, event.totalItems].some((value) => value !== undefined)) {
+    details.push(text("resolvedItems", { count: String(event.resolvedItems ?? 0) }));
+    details.push(text("downloadedItems", { count: String(event.downloadedItems ?? 0) }));
+    details.push(text("addedItems", { count: String(event.addedItems ?? 0) }));
+  }
+  return details.join(" · ");
 }
 
 function setupCopy(phase: SetupProgress["phase"]): string {
@@ -125,7 +189,7 @@ function patchSetupProgress(event: SetupProgress): boolean {
   copy.textContent = setupCopy(event.phase);
   track.classList.toggle("indeterminate", indeterminate);
   bar.style.width = `${Math.max(0, Math.min(100, event.percent))}%`;
-  value.textContent = indeterminate ? text("working") : `${Math.round(event.percent)}%`;
+  value.textContent = indeterminate ? text("working") : setupProgressStatus(event);
   return true;
 }
 
@@ -182,7 +246,10 @@ function renderTray(): void {
   const serviceClass = state.servicePhase === "ready" ? "ready" : state.servicePhase === "starting" || state.servicePhase === "stopping" ? "starting" : state.servicePhase === "failed" ? "failed" : "";
   const updateLabel = (state.update?.phase === "ready" || state.update?.phase === "available") && state.update.version
     ? text("installUpdate", { version: state.update.version })
-    : state.update?.phase === "checking" ? text("checkingUpdates") : text("checkUpdates");
+    : state.update?.phase === "checking" && ["downloadingUpdate", "preparingPackageManager", "resolvingDependencies", "installingPackages", "runningInstallScripts"].includes(state.update.messageKey) ? text("downloadingUpdateMenu")
+      : state.update?.phase === "checking" && state.update.messageKey === "verifyingUpdate" ? text("verifyingUpdateMenu")
+        : state.update?.phase === "checking" ? text("checkingUpdates")
+          : state.update?.phase === "installing" ? text("installingUpdate") : text("checkUpdates");
   app.innerHTML = `<div class="window-shell compact">
     <div class="tray">
       <div class="tray-version"><span class="status-dot ${serviceClass}"></span> Harness ${escape(state.dshVersion)}</div>
@@ -191,7 +258,7 @@ function renderTray(): void {
       <button class="tray-item" id="tray-logs">${text("openLogs")}</button>
       <div class="tray-divider"></div>
       <button class="tray-item" id="tray-updates">${updateLabel}</button>
-      <button class="tray-item tray-toggle" id="tray-auto"><span>${text("autoUpdates")}</span><span class="check">${state.autoDownload ? "✓" : ""}</span></button>
+      <button class="tray-item tray-toggle" id="tray-auto" aria-pressed="${state.autoCheckDshUpdates}"><span>${text("autoUpdates")}</span><span class="switch ${state.autoCheckDshUpdates ? "active" : ""}" aria-hidden="true"><span class="switch-knob"></span></span></button>
       <div class="locale-toggle" aria-label="${text("language")}">
         <button data-locale="zh-CN" class="${state.locale === "zh-CN" ? "active" : ""}">中文</button>
         <button data-locale="en-US" class="${state.locale === "en-US" ? "active" : ""}">EN</button>
@@ -204,13 +271,13 @@ function renderTray(): void {
   bind("tray-logs", async () => { await api.openLogs(); await api.hideTray(); });
   bind("tray-updates", async () => {
     await api.hideTray();
-    if ((state.update?.phase === "ready" || state.update?.phase === "available") && state.update.version) {
-      await api.updateDecision(state.update.target, state.update.version, "install");
+    if (state.update && ["checking", "available", "ready", "installing"].includes(state.update.phase)) {
+      await api.showUpdate();
     } else {
       await api.checkUpdates();
     }
   });
-  bind("tray-auto", async () => { await api.autoDownload(!state.autoDownload); state = await api.state(); renderTray(); });
+  bind("tray-auto", async () => { await api.autoCheckDshUpdates(!state.autoCheckDshUpdates); state = await api.state(); renderTray(); });
   bind("tray-exit", async () => { await api.requestExitPrompt(); await api.hideTray(); });
   bindLanguageControls(renderTray);
 }
@@ -254,20 +321,43 @@ function renderPrompt(): void {
         <button class="danger-neutral" id="cancel-setup">${text("cancelSetup")}</button>
       </div>
     </section>`;
+  } else if (promptKind === "pause-update") {
+    content = `<section class="surface">
+      <h1>${text("pauseUpdateTitle")}</h1>
+      <p class="copy">${text("pauseUpdateCopy")}</p>
+      <div class="button-row">
+        <button class="secondary" id="continue-update">${text("continueUpdate")}</button>
+        <button class="primary" id="pause-update">${text("pauseUpdate")}</button>
+      </div>
+    </section>`;
   } else if (promptKind === "update" && (state.update?.phase === "ready" || state.update?.phase === "available") && state.update.version) {
     const update = state.update;
     const version = update.version!;
-    const copy = update.target === "controller" ? text("controllerUpdate") : text("dshUpdate");
+    const copy = update.target === "controller"
+      ? text("controllerUpdate")
+      : text(update.phase === "available" ? "dshUpdateAvailable" : "dshUpdate");
     content = `<section class="surface">
       <p class="eyebrow">${update.target === "controller" ? "DSH Community Installer" : "DSH"}</p>
       <h1>${text(update.phase === "available" ? "updateAvailable" : "updateReady", { version: escape(version) })}</h1>
       <p class="copy">${copy}</p>
       <div class="button-row equal">
-        <button class="primary" data-update="install">${text("installNow")}</button>
+        <button class="primary" data-update="install">${text(update.phase === "available" ? "downloadAndInstall" : "installNow")}</button>
         <button class="secondary" data-update="later">${text("later")}</button>
         <button class="secondary" data-update="skip">${text("skip")}</button>
       </div>
     </section>`;
+  } else if (promptKind === "update-result" && state.update?.phase === "checking") {
+    const work = updateWork();
+    const progress = state.update.progress;
+    const indeterminate = progress === undefined || progress === null;
+    content = progressSurface(
+      work.title,
+      work.copy,
+      progress ?? 0,
+      "",
+      indeterminate,
+      indeterminate ? "" : updateProgressStatus(),
+    );
   } else if (promptKind === "update-result" && state.update?.phase === "current") {
     content = `<section class="surface">
       <h1>${text("upToDate")}</h1>
@@ -275,19 +365,28 @@ function renderPrompt(): void {
       <div class="button-row"><button class="primary" id="dismiss-update">${text("close")}</button></div>
     </section>`;
   } else if (promptKind === "update-result" && state.update?.phase === "failed") {
-    const policyBlocked = state.update.messageKey === "scriptPolicyBlocked";
     const nodeVersionBlocked = state.update.messageKey === "nodeVersionBlocked";
-    const installFailure = state.update.messageKey === "updateInstallFailed" || policyBlocked || nodeVersionBlocked;
+    const installFailure = state.update.messageKey === "updateInstallFailed" || nodeVersionBlocked;
     content = `<section class="surface">
-      <h1>${text(policyBlocked ? "scriptPolicyBlocked" : nodeVersionBlocked ? "nodeVersionBlocked" : installFailure ? "updateInstallFailed" : "updateCheckFailed")}</h1>
-      <p class="copy">${text(policyBlocked ? "scriptPolicyBlockedCopy" : nodeVersionBlocked ? "nodeVersionBlockedCopy" : installFailure ? "updateInstallFailedCopy" : "updateCheckFailedCopy")}</p>
+      <h1>${text(nodeVersionBlocked ? "nodeVersionBlocked" : installFailure ? "updateInstallFailed" : "updateCheckFailed")}</h1>
+      <p class="copy">${text(nodeVersionBlocked ? "nodeVersionBlockedCopy" : installFailure ? "updateInstallFailedCopy" : "updateCheckFailedCopy")}</p>
       <div class="button-row">
         <button class="secondary" id="dismiss-update">${text("close")}</button>
         ${installFailure ? `<button class="primary" id="open-update-logs">${text("openLogs")}</button>` : `<button class="primary" id="retry-update">${text("retry")}</button>`}
       </div>
     </section>`;
   } else if (promptKind === "update-result" && state.update?.phase === "installing") {
-    content = progressSurface(text("installingUpdate"), text("setupWorkingCopy"), 50, "", true);
+    const work = updateWork();
+    const progress = state.update.progress;
+    const indeterminate = progress === undefined || progress === null;
+    content = progressSurface(
+      work.title,
+      work.copy,
+      progress ?? 0,
+      "",
+      indeterminate,
+      indeterminate ? "" : updateProgressStatus(),
+    );
   } else {
     content = `<section class="surface">
       <h1>${text("exitTitle")}</h1>
@@ -298,13 +397,19 @@ function renderPrompt(): void {
       </div>
     </section>`;
   }
-  app.innerHTML = shell(content, { language: false, minimize: false });
+  const updatePrompt = promptKind === "update" || promptKind === "update-result";
+  app.innerHTML = shell(content, { language: false, minimize: updatePrompt });
   bindWindowControls();
   bind("continue-setup", () => api.closeWindow());
   bind("cancel-setup", async () => {
     await api.closeWindow();
     await api.cancelSetup();
   });
+  bind("continue-update", () => {
+    promptKind = "update-result";
+    renderPrompt();
+  });
+  bind("pause-update", () => api.pauseUpdate());
   bind("cancel-exit", () => api.closeWindow());
   bind("confirm-exit", () => api.exit());
   bind("dismiss-update", () => api.dismissUpdate());
@@ -345,11 +450,22 @@ async function runAction(button: HTMLButtonElement, action: () => void | Promise
 
 function bindWindowControls(): void {
   bind("minimize", () => api.minimize());
-  bind("close-window", () => view === "main"
-    ? api.requestMainClose()
-    : view === "prompt" && promptKind === "update-result"
-      ? api.dismissUpdate()
-      : api.closeWindow());
+  bind("close-window", () => {
+    if (view === "main") return api.requestMainClose();
+    if (view === "prompt"
+      && promptKind === "update-result"
+      && state.update?.target === "dsh"
+      && state.update.phase === "checking"
+      && ["preparingUpdate", "downloadingUpdate", "preparingPackageManager", "resolvingDependencies", "installingPackages", "runningInstallScripts", "verifyingUpdate"].includes(state.update.messageKey)) {
+      promptKind = "pause-update";
+      renderPrompt();
+      return;
+    }
+    if (view === "prompt" && promptKind === "update-result" && (state.update?.phase === "current" || state.update?.phase === "failed")) {
+      return api.dismissUpdate();
+    }
+    return api.closeWindow();
+  });
   document.querySelectorAll<HTMLElement>("[data-drag-region]").forEach((element) => {
     element.addEventListener("mousedown", (event) => {
       if (event.button === 0 && event.target === element) void api.drag();
@@ -394,8 +510,15 @@ await api.onService((event: ServiceState) => {
 await api.onUpdate((event: UpdateState) => {
   state.update = event;
   if (event.phase === "ready" || event.phase === "available") promptKind = "update";
+  else if (event.phase === "checking" && promptKind !== "pause-update") promptKind = "update-result";
   else if (event.phase === "current" || event.phase === "failed" || event.phase === "installing") promptKind = "update-result";
   if (view !== "logs") renderCurrent();
+});
+await api.onUpdatePrompt(() => {
+  promptKind = state.update?.phase === "ready" || state.update?.phase === "available"
+    ? "update"
+    : "update-result";
+  renderCurrent();
 });
 await api.onExitPrompt(() => {
   promptKind = "exit";

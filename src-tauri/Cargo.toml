@@ -1,6 +1,6 @@
 [package]
 name = "dsh-community-installer"
-version = "0.4.3"
+version = "0.4.6"
 description = "Unofficial community installer and local controller for DSH"
 authors = ["DSH Community Installer contributors"]
 edition = "2024"

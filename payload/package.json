@@ -2,15 +2,9 @@
   "name": "dsh-community-runtime",
   "version": "0.1.0",
   "private": true,
+  "packageManager": "pnpm@11.7.0",
   "description": "Pinned runtime payload for DSH Community Installer",
   "license": "MIT",
-  "allowScripts": {
-    "@deepseek-ai/dsh-subprocess-local@0.1.0-rc.7": true,
-    "@google/genai@1.52.0": true,
-    "koffi@3.1.5": true,
-    "node-pty@1.2.0-beta.15": true,
-    "protobufjs@7.6.5": true
-  },
   "dependencies": {
     "@deepseek-ai/dsh": "0.1.0-rc.7"
   }

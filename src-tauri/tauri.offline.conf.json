@@ -2,7 +2,6 @@
   "bundle": {
     "resources": {
       "../payload/package.json": "payload/package.json",
-      "../payload/package-lock.json": "payload/package-lock.json",
       "../build-config.json": "build-config.json",
       "../runtime-seed/runtime-seed.zip": "runtime-seed.zip"
     },

@@ -1,8 +1,12 @@
 use std::{
+    collections::HashSet,
     fs,
     path::{Path, PathBuf},
     process::Stdio,
-    sync::{Arc, atomic::Ordering},
+    sync::{
+        Arc, Mutex as StdMutex,
+        atomic::{AtomicBool, Ordering},
+    },
     time::{Duration, Instant},
 };
 
@@ -10,12 +14,16 @@ use futures_util::StreamExt;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use tauri::{AppHandle, Emitter, Manager};
-use tokio::process::Command;
+use tokio::{
+    io::{AsyncBufReadExt, BufReader},
+    process::Command,
+    sync::mpsc,
+};
 
 use crate::{
     Controller,
     job::ProcessJob,
-    model::{DSH_VERSION, NODE_VERSION, SetupPhase, SetupProgress},
+    model::{DSH_VERSION, NODE_VERSION, PNPM_VERSION, SetupPhase, SetupProgress},
     paths::{AppPaths, safe_archive_path},
 };
 
@@ -35,8 +43,44 @@ const NODE_ARCHIVE_ROOT: &str = concat!(
     env!("DSH_RUNTIME_ARCHITECTURE")
 );
 const NODE_ARCHIVE_SHA256: &str = env!("DSH_NODE_ARCHIVE_SHA256");
-const PACKAGE_JSON: &[u8] = include_bytes!("../../payload/package.json");
-const PACKAGE_LOCK: &[u8] = include_bytes!("../../payload/package-lock.json");
+pub const UPDATE_PAUSED_ERROR: &str = "The update was paused by the user.";
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, PartialOrd, Ord)]
+pub enum PnpmStage {
+    #[default]
+    Preparing,
+    Resolving,
+    Importing,
+    Lifecycle,
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct PnpmProgress {
+    pub stage: PnpmStage,
+    pub resolved_items: u64,
+    pub reused_items: u64,
+    pub downloaded_items: u64,
+    pub added_items: u64,
+    pub total_items: Option<u64>,
+    pub elapsed_seconds: u64,
+}
+
+impl PnpmProgress {
+    pub fn percent(&self) -> f64 {
+        match self.stage {
+            PnpmStage::Preparing => 5.0,
+            PnpmStage::Resolving if self.total_items.is_none() => 10.0,
+            PnpmStage::Resolving | PnpmStage::Importing => self.total_items.map_or(10.0, |total| {
+                if total == 0 {
+                    80.0
+                } else {
+                    25.0 + 55.0 * (self.added_items.min(total) as f64 / total as f64)
+                }
+            }),
+            PnpmStage::Lifecycle => 85.0,
+        }
+    }
+}
 
 #[derive(Clone, Debug)]
 pub struct ResolvedRuntime {
@@ -77,7 +121,7 @@ fn resolve_pointer(paths: &AppPaths, pointer_path: &Path) -> Result<ResolvedRunt
     let pointer: RuntimePointer =
         serde_json::from_slice(&fs::read(pointer_path).map_err(|error| error.to_string())?)
             .map_err(|error| error.to_string())?;
-    if pointer.format_version != 1 || pointer.package != "@deepseek-ai/dsh" {
+    if pointer.format_version != 2 || pointer.package != "@deepseek-ai/dsh" {
         return Err("The active runtime pointer is invalid.".to_owned());
     }
     let relative = Path::new(&pointer.relative_path);
@@ -131,8 +175,8 @@ pub fn resolve_candidate(
     };
     let dsh = safe_archive_path(&package_root, Path::new(&relative_bin))?;
     let node = paths.node_executable();
-    let npm_cli = paths.npm_cli();
-    if !node.is_file() || !npm_cli.is_file() || !dsh.is_file() {
+    let corepack_cli = paths.corepack_cli();
+    if !node.is_file() || !corepack_cli.is_file() || !dsh.is_file() {
         return Err("The private Harness runtime is incomplete.".to_owned());
     }
     Ok(ResolvedRuntime {
@@ -165,11 +209,13 @@ pub async fn install(
         .resource_dir()
         .ok()
         .map(|directory| directory.join("runtime-seed.zip"));
-    if resource_seed.as_ref().is_some_and(|path| path.is_file()) {
-        install_offline(&app, &controller, resource_seed.as_ref().unwrap()).await?;
-    } else {
-        install_online(&app, &controller).await?;
-    }
+    let (installed_root, installed_version) =
+        if resource_seed.as_ref().is_some_and(|path| path.is_file()) {
+            install_offline(&app, &controller, resource_seed.as_ref().unwrap()).await?;
+            (controller.paths.dsh_root.clone(), DSH_VERSION.to_owned())
+        } else {
+            install_online(&app, &controller).await?
+        };
     progress(
         &app,
         &controller,
@@ -179,12 +225,15 @@ pub async fn install(
         None,
     )
     .await;
-    let resolved = resolve_candidate(&controller.paths, &controller.paths.dsh_root, DSH_VERSION)?;
+    let resolved = resolve_candidate(&controller.paths, &installed_root, &installed_version)?;
     validate_runtime(&app, &controller, &resolved).await?;
     Ok(resolved)
 }
 
-async fn install_online(app: &AppHandle, controller: &Arc<Controller>) -> Result<(), String> {
+async fn install_online(
+    app: &AppHandle,
+    controller: &Arc<Controller>,
+) -> Result<(PathBuf, String), String> {
     if !private_node_is_valid(app, controller).await {
         progress(app, controller, SetupPhase::Node, 10.0, "node", None).await;
         let archive = controller
@@ -204,7 +253,10 @@ async fn install_online(app: &AppHandle, controller: &Arc<Controller>) -> Result
         let _ = fs::remove_file(archive);
     }
     progress(app, controller, SetupPhase::Dsh, 57.0, "dsh", None).await;
-    install_dsh(app, controller, DSH_VERSION, false).await
+    let version = crate::updates::latest_compatible_dsh_version(app, controller).await?;
+    let target = controller.paths.dsh_version_root(&version);
+    install_online_dsh(app, controller, &version, &target).await?;
+    Ok((target, version))
 }
 
 pub(crate) async fn private_node_is_valid(app: &AppHandle, controller: &Arc<Controller>) -> bool {
@@ -224,7 +276,7 @@ pub(crate) async fn private_node_is_valid(app: &AppHandle, controller: &Arc<Cont
 }
 
 fn private_node_files_exist(paths: &AppPaths) -> bool {
-    paths.node_executable().is_file() && paths.npm_cli().is_file()
+    paths.node_executable().is_file() && paths.corepack_cli().is_file()
 }
 
 async fn install_offline(
@@ -308,43 +360,49 @@ async fn download_node(
     Ok(())
 }
 
-async fn install_dsh(
+async fn install_online_dsh(
     app: &AppHandle,
     controller: &Arc<Controller>,
     version: &str,
-    ignore_scripts_only: bool,
+    target: &Path,
 ) -> Result<(), String> {
-    let stage = controller.paths.staging.join(format!("dsh-{version}"));
+    let stage = controller.paths.staging.join(format!("setup-{version}"));
     remove_if_exists(&stage)?;
     let runtime = stage.join("runtime");
     fs::create_dir_all(&runtime).map_err(|error| error.to_string())?;
-    fs::write(runtime.join("package.json"), PACKAGE_JSON).map_err(|error| error.to_string())?;
-    fs::write(runtime.join("package-lock.json"), PACKAGE_LOCK)
-        .map_err(|error| error.to_string())?;
-    run_npm(
+    let manifest = serde_json::json!({
+        "name": "dsh-community-runtime",
+        "version": "1.0.0",
+        "private": true,
+        "packageManager": format!("pnpm@{PNPM_VERSION}"),
+        "dependencies": { "@deepseek-ai/dsh": version }
+    });
+    fs::write(
+        runtime.join("package.json"),
+        serde_json::to_vec_pretty(&manifest).map_err(|error| error.to_string())?,
+    )
+    .map_err(|error| error.to_string())?;
+    let (sender, mut receiver) = mpsc::unbounded_channel();
+    let progress_app = app.clone();
+    let progress_controller = controller.clone();
+    let progress_task = tokio::spawn(async move {
+        while let Some(pnpm) = receiver.recv().await {
+            package_progress(&progress_app, &progress_controller, SetupPhase::Dsh, &pnpm).await;
+        }
+    });
+    let result = run_pnpm(
         app,
         controller,
-        &[
-            "ci",
-            "--omit=dev",
-            "--no-audit",
-            "--no-fund",
-            "--ignore-scripts",
-            "--registry=https://registry.npmjs.org/",
-        ],
         &runtime,
-        Duration::from_secs(900),
+        Duration::from_secs(1200),
+        false,
+        sender,
     )
-    .await?;
-    if !ignore_scripts_only {
-        run_npm(
-            app,
-            controller,
-            &["rebuild", "--no-audit", "--no-fund"],
-            &runtime,
-            Duration::from_secs(900),
-        )
-        .await?;
+    .await;
+    let _ = progress_task.await;
+    if let Err(error) = result {
+        let _ = remove_if_exists(&stage);
+        return Err(error);
     }
     let manifest: PackageManifest = serde_json::from_slice(
         &fs::read(runtime.join("node_modules/@deepseek-ai/dsh/package.json"))
@@ -352,9 +410,10 @@ async fn install_dsh(
     )
     .map_err(|error| error.to_string())?;
     if manifest.name != "@deepseek-ai/dsh" || manifest.version != version {
-        return Err("npm installed an unexpected DSH package version.".to_owned());
+        let _ = remove_if_exists(&stage);
+        return Err("pnpm installed an unexpected DSH package version.".to_owned());
     }
-    activate_directory(&stage, &controller.paths.dsh_root)
+    activate_directory(&stage, target)
 }
 
 pub async fn validate_runtime(
@@ -427,6 +486,27 @@ pub async fn run_checked(
     working_directory: &Path,
     timeout: Duration,
 ) -> Result<String, String> {
+    run_checked_inner(
+        app,
+        controller,
+        program,
+        arguments,
+        working_directory,
+        timeout,
+        false,
+    )
+    .await
+}
+
+async fn run_checked_inner(
+    app: &AppHandle,
+    controller: &Arc<Controller>,
+    program: &Path,
+    arguments: &[&str],
+    working_directory: &Path,
+    timeout: Duration,
+    pause_with_update: bool,
+) -> Result<String, String> {
     let mut command = hidden_command(program);
     command
         .args(arguments)
@@ -446,6 +526,10 @@ pub async fn run_checked(
         _ = wait_for_shutdown(controller) => {
             drop(job);
             return Err("The operation was cancelled because Harness is exiting.".to_owned());
+        }
+        _ = wait_for_update_pause(controller), if pause_with_update => {
+            drop(job);
+            return Err(UPDATE_PAUSED_ERROR.to_owned());
         }
     };
     drop(job);
@@ -474,26 +558,220 @@ async fn wait_for_shutdown(controller: &Arc<Controller>) {
     }
 }
 
-pub async fn run_npm(
+async fn wait_for_update_pause(controller: &Arc<Controller>) {
+    while !controller.update_cancel.load(Ordering::SeqCst) {
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+}
+
+pub async fn run_pnpm(
     app: &AppHandle,
     controller: &Arc<Controller>,
-    arguments: &[&str],
     working_directory: &Path,
     timeout: Duration,
+    pause_with_update: bool,
+    progress: mpsc::UnboundedSender<PnpmProgress>,
 ) -> Result<String, String> {
-    let npm_cli = controller.paths.npm_cli().to_string_lossy().to_string();
-    let mut npm_arguments = Vec::with_capacity(arguments.len() + 1);
-    npm_arguments.push(npm_cli.as_str());
-    npm_arguments.extend_from_slice(arguments);
-    run_checked(
-        app,
-        controller,
-        &controller.paths.node_executable(),
-        &npm_arguments,
-        working_directory,
-        timeout,
-    )
-    .await
+    let _ = progress.send(PnpmProgress::default());
+    let node = controller.paths.node_executable();
+    let arguments = pnpm_arguments(&controller.paths);
+    let mut command = hidden_command(&node);
+    command
+        .args(&arguments)
+        .current_dir(working_directory)
+        .env("COREPACK_HOME", &controller.paths.corepack_home)
+        .env("COREPACK_ENABLE_DOWNLOAD_PROMPT", "0")
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .kill_on_drop(true);
+    prepend_private_path(&mut command, &controller.paths.node_root);
+    let mut child = command.spawn().map_err(|error| error.to_string())?;
+    let mut job = Some(ProcessJob::assign(&child)?);
+    let stdout = child
+        .stdout
+        .take()
+        .ok_or_else(|| "pnpm stdout is unavailable.".to_owned())?;
+    let stderr = child
+        .stderr
+        .take()
+        .ok_or_else(|| "pnpm stderr is unavailable.".to_owned())?;
+    let started = Instant::now();
+    let latest = Arc::new(StdMutex::new(PnpmProgress::default()));
+    let ticker_done = Arc::new(AtomicBool::new(false));
+    let stdout_progress = progress.clone();
+    let stdout_latest = latest.clone();
+    let stdout_task = tokio::spawn(async move {
+        let mut parser = PnpmProgressParser::default();
+        let mut lines = BufReader::new(stdout).lines();
+        let mut tail = Vec::new();
+        while let Ok(Some(line)) = lines.next_line().await {
+            if let Some(update) = parser.observe(&line, started.elapsed().as_secs()) {
+                if let Ok(mut latest) = stdout_latest.lock() {
+                    *latest = update.clone();
+                }
+                let _ = stdout_progress.send(update);
+            } else if !line.trim().is_empty() {
+                tail.push(line);
+                if tail.len() > 40 {
+                    tail.remove(0);
+                }
+            }
+        }
+        tail.join("\n")
+    });
+    let ticker_progress = progress.clone();
+    let ticker_latest = latest.clone();
+    let ticker_done_clone = ticker_done.clone();
+    let ticker_task = tokio::spawn(async move {
+        while !ticker_done_clone.load(Ordering::SeqCst) {
+            tokio::time::sleep(Duration::from_secs(1)).await;
+            if ticker_done_clone.load(Ordering::SeqCst) {
+                break;
+            }
+            let mut update = ticker_latest
+                .lock()
+                .map(|state| state.clone())
+                .unwrap_or_default();
+            update.elapsed_seconds = started.elapsed().as_secs();
+            let _ = ticker_progress.send(update);
+        }
+    });
+    let stderr_app = app.clone();
+    let stderr_controller = controller.clone();
+    let stderr_task = tokio::spawn(async move {
+        let mut lines = BufReader::new(stderr).lines();
+        let mut tail = Vec::new();
+        while let Ok(Some(line)) = lines.next_line().await {
+            if !line.trim().is_empty() {
+                stderr_controller.logs.write(&stderr_app, "stderr", &line);
+                tail.push(line);
+                if tail.len() > 40 {
+                    tail.remove(0);
+                }
+            }
+        }
+        tail.join("\n")
+    });
+    let status_result = tokio::select! {
+        result = tokio::time::timeout(timeout, child.wait()) => {
+            result.map_err(|_| format!("{} timed out.", node.display())).and_then(|result| result.map_err(|error| error.to_string()))
+        }
+        _ = wait_for_shutdown(controller) => {
+            Err("The operation was cancelled because Harness is exiting.".to_owned())
+        }
+        _ = wait_for_update_pause(controller), if pause_with_update => {
+            Err(UPDATE_PAUSED_ERROR.to_owned())
+        }
+    };
+    let status = match status_result {
+        Ok(status) => status,
+        Err(error) => {
+            drop(job.take());
+            let _ = tokio::time::timeout(Duration::from_secs(5), child.wait()).await;
+            ticker_done.store(true, Ordering::SeqCst);
+            let _ = ticker_task.await;
+            let _ = stdout_task.await;
+            let _ = stderr_task.await;
+            return Err(error);
+        }
+    };
+    drop(job.take());
+    ticker_done.store(true, Ordering::SeqCst);
+    let _ = ticker_task.await;
+    let stdout = stdout_task.await.map_err(|error| error.to_string())?;
+    let stderr = stderr_task.await.map_err(|error| error.to_string())?;
+    if !status.success() {
+        return Err(format!(
+            "pnpm exited with {status}: {}",
+            if stderr.is_empty() { stdout } else { stderr }
+        ));
+    }
+    Ok(stdout)
+}
+
+fn pnpm_arguments(paths: &AppPaths) -> Vec<String> {
+    vec![
+        paths.corepack_cli().to_string_lossy().to_string(),
+        "pnpm".to_owned(),
+        "install".to_owned(),
+        "--ignore-workspace".to_owned(),
+        "--prod".to_owned(),
+        "--reporter=ndjson".to_owned(),
+        "--config.node-linker=hoisted".to_owned(),
+        "--config.package-import-method=copy".to_owned(),
+        "--config.auto-install-peers=true".to_owned(),
+        "--config.confirm-modules-purge=false".to_owned(),
+        "--dangerously-allow-all-builds".to_owned(),
+        "--registry=https://registry.npmjs.org/".to_owned(),
+        format!("--store-dir={}", paths.pnpm_store.display()),
+    ]
+}
+
+#[derive(Default)]
+struct PnpmProgressParser {
+    state: PnpmProgress,
+    resolved: HashSet<String>,
+    reused: HashSet<String>,
+    downloaded: HashSet<String>,
+    added: HashSet<String>,
+}
+
+impl PnpmProgressParser {
+    fn observe(&mut self, line: &str, elapsed_seconds: u64) -> Option<PnpmProgress> {
+        let value: serde_json::Value = serde_json::from_str(line).ok()?;
+        let name = value.get("name")?.as_str()?;
+        match name {
+            "pnpm:progress" => {
+                self.state.stage = self.state.stage.max(PnpmStage::Resolving);
+                let status = value.get("status")?.as_str()?;
+                let key = value
+                    .get("packageId")
+                    .or_else(|| value.get("pkgId"))
+                    .or_else(|| value.get("package"))
+                    .map(ToString::to_string)
+                    .unwrap_or_else(|| line.to_owned());
+                match status {
+                    "resolved" => {
+                        self.resolved.insert(key);
+                    }
+                    "found_in_store" => {
+                        self.reused.insert(key);
+                    }
+                    "fetched" => {
+                        self.downloaded.insert(key);
+                    }
+                    "imported" => {
+                        self.state.stage = self.state.stage.max(PnpmStage::Importing);
+                        self.added.insert(key);
+                    }
+                    _ => return None,
+                }
+            }
+            "pnpm:stats" => {
+                self.state.stage = self.state.stage.max(PnpmStage::Importing);
+                self.state.total_items = value.get("added").and_then(serde_json::Value::as_u64);
+            }
+            "pnpm:stage" => {
+                if value
+                    .get("stage")
+                    .and_then(serde_json::Value::as_str)
+                    .is_some_and(|stage| stage.starts_with("importing"))
+                {
+                    self.state.stage = self.state.stage.max(PnpmStage::Importing);
+                }
+            }
+            "pnpm:lifecycle" => {
+                self.state.stage = self.state.stage.max(PnpmStage::Lifecycle);
+            }
+            _ => return None,
+        }
+        self.state.resolved_items = self.resolved.len() as u64;
+        self.state.reused_items = self.reused.len() as u64;
+        self.state.downloaded_items = self.downloaded.len() as u64;
+        self.state.added_items = self.added.len() as u64;
+        self.state.elapsed_seconds = elapsed_seconds;
+        Some(self.state.clone())
+    }
 }
 
 fn hidden_command(program: &Path) -> Command {
@@ -599,7 +877,7 @@ pub(crate) fn activate_directory(source: &Path, destination: &Path) -> Result<()
 
 fn write_pointer(paths: &AppPaths, version: &str) -> Result<(), String> {
     let pointer = RuntimePointer {
-        format_version: 1,
+        format_version: 2,
         package: "@deepseek-ai/dsh".to_owned(),
         version: version.to_owned(),
         relative_path: format!("dsh/{version}"),
@@ -633,10 +911,15 @@ pub fn discard_install_staging(paths: &AppPaths) {
         paths.staging.join(format!("{NODE_ARCHIVE_ROOT}.zip")),
         paths.staging.join("node-extracted"),
         paths.staging.join("offline-seed"),
-        paths.staging.join(format!("dsh-{DSH_VERSION}")),
-        paths.dsh_root.clone(),
     ] {
         let _ = remove_if_exists(&path);
+    }
+    if let Ok(entries) = fs::read_dir(&paths.staging) {
+        for entry in entries.flatten() {
+            if entry.file_name().to_string_lossy().starts_with("setup-") {
+                let _ = remove_if_exists(&entry.path());
+            }
+        }
     }
 }
 
@@ -681,8 +964,50 @@ async fn progress(
         percent,
         message_key: message_key.to_owned(),
         detail,
+        resolved_items: None,
+        reused_items: None,
+        downloaded_items: None,
+        added_items: None,
+        total_items: None,
+        elapsed_seconds: None,
     };
     let _ = app.emit("setup://progress", event);
+}
+
+async fn package_progress(
+    app: &AppHandle,
+    controller: &Arc<Controller>,
+    phase: SetupPhase,
+    pnpm: &PnpmProgress,
+) {
+    let message_key = match pnpm.stage {
+        PnpmStage::Preparing => "preparingPackageManager",
+        PnpmStage::Resolving => "resolvingDependencies",
+        PnpmStage::Importing => "installingPackages",
+        PnpmStage::Lifecycle => "runningInstallScripts",
+    };
+    let percent = pnpm.percent();
+    {
+        let mut snapshot = controller.snapshot.write().await;
+        snapshot.setup_phase = phase;
+        snapshot.progress = percent;
+        snapshot.message_key = message_key.to_owned();
+    }
+    let _ = app.emit(
+        "setup://progress",
+        SetupProgress {
+            phase,
+            percent,
+            message_key: message_key.to_owned(),
+            detail: None,
+            resolved_items: Some(pnpm.resolved_items),
+            reused_items: Some(pnpm.reused_items),
+            downloaded_items: Some(pnpm.downloaded_items),
+            added_items: Some(pnpm.added_items),
+            total_items: pnpm.total_items,
+            elapsed_seconds: Some(pnpm.elapsed_seconds),
+        },
+    );
 }
 
 #[cfg(test)]
@@ -696,8 +1021,9 @@ mod tests {
         fs::create_dir_all(paths.node_executable().parent().expect("node parent"))
             .expect("node directory");
         fs::write(paths.node_executable(), b"node").expect("node executable");
-        fs::create_dir_all(paths.npm_cli().parent().expect("npm parent")).expect("npm directory");
-        fs::write(paths.npm_cli(), b"npm").expect("npm cli");
+        fs::create_dir_all(paths.corepack_cli().parent().expect("corepack parent"))
+            .expect("corepack directory");
+        fs::write(paths.corepack_cli(), b"corepack").expect("corepack cli");
 
         let package = paths.dsh_root.join("runtime/node_modules/@deepseek-ai/dsh");
         fs::create_dir_all(package.join("bin")).expect("package directory");
@@ -729,8 +1055,9 @@ mod tests {
         fs::create_dir_all(paths.node_executable().parent().expect("node parent"))
             .expect("node directory");
         fs::write(paths.node_executable(), b"node").expect("node executable");
-        fs::create_dir_all(paths.npm_cli().parent().expect("npm parent")).expect("npm directory");
-        fs::write(paths.npm_cli(), b"npm").expect("npm cli");
+        fs::create_dir_all(paths.corepack_cli().parent().expect("corepack parent"))
+            .expect("corepack directory");
+        fs::write(paths.corepack_cli(), b"corepack").expect("corepack cli");
         let package = paths.dsh_root.join("runtime/node_modules/@deepseek-ai/dsh");
         fs::create_dir_all(package.join("bin")).expect("package directory");
         fs::write(
@@ -757,6 +1084,22 @@ mod tests {
     }
 
     #[test]
+    fn old_pointer_format_is_rejected() {
+        let temporary = tempfile::tempdir().expect("temporary directory");
+        let paths = AppPaths::from_root(temporary.path().join("app"));
+        fs::create_dir_all(&paths.root).expect("app directory");
+        fs::write(
+            &paths.current,
+            format!(
+                r#"{{"formatVersion":1,"package":"@deepseek-ai/dsh","version":"{DSH_VERSION}","relativePath":"dsh/{DSH_VERSION}"}}"#
+            ),
+        )
+        .expect("old pointer");
+
+        assert!(resolve_runtime(&paths).is_err());
+    }
+
+    #[test]
     fn directory_activation_restores_the_previous_destination_on_failure() {
         let temporary = tempfile::tempdir().expect("temporary directory");
         let destination = temporary.path().join("runtime");
@@ -771,7 +1114,7 @@ mod tests {
     }
 
     #[test]
-    fn node_runtime_without_npm_is_not_reusable() {
+    fn node_runtime_without_corepack_is_not_reusable() {
         let temporary = tempfile::tempdir().expect("temporary directory");
         let paths = AppPaths::from_root(temporary.path().join("app"));
         fs::create_dir_all(paths.node_executable().parent().expect("node parent"))
@@ -779,5 +1122,76 @@ mod tests {
         fs::write(paths.node_executable(), b"node").expect("node executable");
 
         assert!(!private_node_files_exist(&paths));
+    }
+
+    #[test]
+    fn pnpm_ndjson_reports_real_package_activity_and_ignores_bad_lines() {
+        let mut parser = PnpmProgressParser::default();
+        assert!(parser.observe("not json", 1).is_none());
+        let resolved = parser
+            .observe(
+                r#"{"name":"pnpm:progress","status":"resolved","packageId":"a@1.0.0"}"#,
+                2,
+            )
+            .unwrap();
+        assert_eq!(resolved.resolved_items, 1);
+        assert_eq!(resolved.percent(), 10.0);
+        let stats = parser
+            .observe(r#"{"name":"pnpm:stats","added":4}"#, 3)
+            .unwrap();
+        assert_eq!(stats.total_items, Some(4));
+        assert_eq!(stats.percent(), 25.0);
+        let reused = parser
+            .observe(
+                r#"{"name":"pnpm:progress","status":"found_in_store","packageId":"a@1.0.0"}"#,
+                4,
+            )
+            .unwrap();
+        assert_eq!(reused.reused_items, 1);
+        let downloaded = parser
+            .observe(
+                r#"{"name":"pnpm:progress","status":"fetched","packageId":"b@1.0.0"}"#,
+                5,
+            )
+            .unwrap();
+        assert_eq!(downloaded.downloaded_items, 1);
+        let added = parser
+            .observe(
+                r#"{"name":"pnpm:progress","status":"imported","packageId":"a@1.0.0"}"#,
+                6,
+            )
+            .unwrap();
+        assert_eq!(added.added_items, 1);
+        assert!(added.percent() > 25.0);
+        let lifecycle = parser
+            .observe(r#"{"name":"pnpm:lifecycle","depPath":"a@1.0.0"}"#, 7)
+            .unwrap();
+        assert_eq!(lifecycle.stage, PnpmStage::Lifecycle);
+        assert_eq!(lifecycle.percent(), 85.0);
+    }
+
+    #[test]
+    fn pnpm_command_uses_private_corepack_store_and_fixed_install_layout() {
+        let paths = AppPaths::from_root(PathBuf::from("C:/private-app"));
+        let arguments = pnpm_arguments(&paths);
+
+        assert_eq!(arguments[0], paths.corepack_cli().to_string_lossy());
+        assert_eq!(
+            &arguments[1..5],
+            ["pnpm", "install", "--ignore-workspace", "--prod"]
+        );
+        for expected in [
+            "--reporter=ndjson",
+            "--config.node-linker=hoisted",
+            "--config.package-import-method=copy",
+            "--config.auto-install-peers=true",
+            "--config.confirm-modules-purge=false",
+            "--dangerously-allow-all-builds",
+        ] {
+            assert!(arguments.iter().any(|argument| argument == expected));
+        }
+        assert!(arguments.iter().any(|argument| {
+            argument == &format!("--store-dir={}", paths.pnpm_store.display())
+        }));
     }
 }

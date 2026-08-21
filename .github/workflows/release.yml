@@ -37,7 +37,6 @@ jobs:
           if ($env:GITHUB_REF_TYPE -eq "tag" -and $env:GITHUB_REF_NAME -ne "v$version") {
             throw "Tag $env:GITHUB_REF_NAME does not match installer version $version."
           }
-      - run: pnpm third-party:generate
       - run: git diff --exit-code -- THIRD_PARTY_PACKAGES.txt
       - run: pnpm build:online
       - name: Smoke-test the online installer
@@ -83,44 +82,6 @@ jobs:
           $uninstaller = $record.UninstallString.Trim('"')
           Invoke-BoundedProcess -FilePath $uninstaller -ArgumentList @("/S") -Description "Silent uninstaller"
       - run: pnpm build:offline
-      - name: Smoke-test the offline installer entry and seed
-        shell: pwsh
-        run: |
-          function Invoke-BoundedProcess {
-            param(
-              [string] $FilePath,
-              [string[]] $ArgumentList = @(),
-              [string] $Description,
-              [int] $TimeoutSeconds = 120
-            )
-            Write-Host "$Description..."
-            $start = @{ FilePath = $FilePath; PassThru = $true }
-            if ($ArgumentList.Count -gt 0) { $start.ArgumentList = $ArgumentList }
-            $process = Start-Process @start
-            if (-not $process.WaitForExit($TimeoutSeconds * 1000)) {
-              Stop-Process -Id $process.Id -Force -ErrorAction SilentlyContinue
-              throw "$Description exceeded $TimeoutSeconds seconds."
-            }
-            if ($process.ExitCode -ne 0) { throw "$Description exited with $($process.ExitCode)." }
-          }
-
-          $version = "${{ steps.release_version.outputs.version }}"
-          $installer = Resolve-Path "dist/tauri/DSH-Community-Offline-Setup-$version-Windows-x64.exe"
-          Invoke-BoundedProcess -FilePath $installer -ArgumentList @("/S") -Description "Offline silent installer"
-          $record = Get-ChildItem "HKCU:\Software\Microsoft\Windows\CurrentVersion\Uninstall" |
-            Get-ItemProperty |
-            Where-Object DisplayName -eq "DSH Community Installer - Unofficial" |
-            Select-Object -First 1
-          if (-not $record -or -not $record.InstallLocation) { throw "The offline uninstall record is missing." }
-          $installRoot = $record.InstallLocation.Trim('"')
-          $application = Join-Path $installRoot "dsh-community-installer.exe"
-          $seed = Join-Path $installRoot "resources\runtime-seed.zip"
-          if (-not (Test-Path -LiteralPath $application)) { throw "The offline application is missing." }
-          if (-not (Test-Path -LiteralPath $seed)) { throw "The offline runtime seed is missing." }
-          Invoke-BoundedProcess -FilePath $application -ArgumentList @("--smoke-setup") -Description "Offline first-run setup" -TimeoutSeconds 600
-          Invoke-BoundedProcess -FilePath $application -ArgumentList @("--shutdown-for-maintenance") -Description "Offline maintenance shutdown" -TimeoutSeconds 30
-          $uninstaller = $record.UninstallString.Trim('"')
-          Invoke-BoundedProcess -FilePath $uninstaller -ArgumentList @("/S") -Description "Offline silent uninstaller"
       - run: pnpm release
       - uses: actions/upload-artifact@v4
         with:

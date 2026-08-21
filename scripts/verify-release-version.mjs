@@ -10,7 +10,6 @@ const cargo = readFileSync(join(root, "src-tauri", "Cargo.toml"), "utf8");
 const cargoVersion = cargo.match(/^version = "([^"]+)"$/m)?.[1];
 const bridge = readFileSync(join(root, "frontend", "bridge.ts"), "utf8");
 const payload = JSON.parse(readFileSync(join(root, "payload", "package.json"), "utf8"));
-const lock = JSON.parse(readFileSync(join(root, "payload", "package-lock.json"), "utf8"));
 const buildScript = readFileSync(join(root, "src-tauri", "build.rs"), "utf8");
 const readmes = ["README.md", "README.zh-CN.md"];
 
@@ -32,11 +31,16 @@ if (!bridge.includes(`dshVersion: "${build.dshVersion}"`)
     || !bridge.includes(`nodeVersion: "${build.nodeVersion}"`)) {
   throw new Error("The frontend preview runtime versions do not match build-config.json.");
 }
-if (payload.dependencies?.["@deepseek-ai/dsh"] !== build.dshVersion
-    || lock.packages?.["node_modules/@deepseek-ai/dsh"]?.version !== build.dshVersion) {
+if (payload.dependencies?.["@deepseek-ai/dsh"] !== build.dshVersion) {
   throw new Error(`The payload does not pin @deepseek-ai/dsh ${build.dshVersion}.`);
 }
-for (const environment of ["DSH_NODE_VERSION", "DSH_NODE_ARCHIVE_SHA256", "DSH_UPSTREAM_VERSION", "DSH_RUNTIME_ARCHITECTURE"]) {
+if (payload.packageManager !== `pnpm@${build.pnpmVersion}`) {
+  throw new Error(`The payload does not pin pnpm ${build.pnpmVersion}.`);
+}
+if (JSON.stringify(build.dshDistTags) !== JSON.stringify(["latest", "next"])) {
+  throw new Error("build-config.json must check the npm latest and next tags.");
+}
+for (const environment of ["DSH_NODE_VERSION", "DSH_PNPM_VERSION", "DSH_NODE_ARCHIVE_SHA256", "DSH_UPSTREAM_VERSION", "DSH_DIST_TAGS", "DSH_RUNTIME_ARCHITECTURE"]) {
   if (!buildScript.includes(environment)) {
     throw new Error(`src-tauri/build.rs does not export ${environment} from build-config.json.`);
   }

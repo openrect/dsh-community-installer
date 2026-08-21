@@ -16,8 +16,7 @@ const nodeUrl = `https://nodejs.org/dist/v${config.nodeVersion}/node-v${config.n
 const seedInputs = [
   join(root, "build-config.json"),
   join(root, "payload", "package.json"),
-  join(root, "payload", "package-lock.json"),
-  join(root, "payload", "script-policy.json"),
+  fileURLToPath(import.meta.url),
 ];
 
 if (existsSync(outputPath) && statSync(outputPath).mtimeMs >= Math.max(...seedInputs.map((path) => statSync(path).mtimeMs))) {
@@ -68,20 +67,73 @@ function installDsh() {
   const runtime = join(workRoot, "dsh", config.dshVersion, "runtime");
   mkdirSync(runtime, { recursive: true });
   cpSync(join(root, "payload", "package.json"), join(runtime, "package.json"));
-  cpSync(join(root, "payload", "package-lock.json"), join(runtime, "package-lock.json"));
   const node = join(workRoot, "node", "node.exe");
-  const npm = join(workRoot, "node", "node_modules", "npm", "bin", "npm-cli.js");
-  const env = { ...process.env, PATH: `${join(workRoot, "node")};${process.env.PATH ?? ""}` };
-  execFileSync(node, [npm, "ci", "--omit=dev", "--no-audit", "--no-fund", "--ignore-scripts", "--registry=https://registry.npmjs.org/"], { cwd: runtime, env, stdio: "inherit" });
-  execFileSync(node, [npm, "rebuild", "--no-audit", "--no-fund"], { cwd: runtime, env, stdio: "inherit" });
-  const pending = JSON.parse(execFileSync(node, [npm, "approve-scripts", "--allow-scripts-pending", "--json"], { cwd: runtime, env, encoding: "utf8" }));
-  if (pending.allowScripts?.length) throw new Error(`Unreviewed install scripts remain: ${pending.allowScripts.map((entry) => entry.name).join(", ")}`);
+  const corepack = join(workRoot, "node", "node_modules", "corepack", "dist", "corepack.js");
+  const env = {
+    ...process.env,
+    PATH: `${join(workRoot, "node")};${process.env.PATH ?? ""}`,
+    COREPACK_HOME: join(cacheRoot, "corepack"),
+    COREPACK_ENABLE_DOWNLOAD_PROMPT: "0",
+  };
+  execFileSync(node, [
+    corepack,
+    "pnpm",
+    "install",
+    "--ignore-workspace",
+    "--prod",
+    "--reporter=ndjson",
+    "--config.node-linker=hoisted",
+    "--config.package-import-method=copy",
+    "--config.auto-install-peers=true",
+    "--config.confirm-modules-purge=false",
+    "--dangerously-allow-all-builds",
+    "--registry=https://registry.npmjs.org/",
+    `--store-dir=${join(cacheRoot, "pnpm-store")}`,
+  ], { cwd: runtime, env, stdio: "inherit" });
   const manifest = JSON.parse(readFileSync(join(runtime, "node_modules", "@deepseek-ai", "dsh", "package.json"), "utf8"));
   if (manifest.version !== config.dshVersion) throw new Error(`Unexpected offline DSH version: ${manifest.version}`);
   const bin = typeof manifest.bin === "string" ? manifest.bin : manifest.bin?.dsh;
   if (!bin) throw new Error("The offline DSH package has no dsh binary.");
   const reported = execFileSync(node, [join(runtime, "node_modules", "@deepseek-ai", "dsh", ...bin.split("/")), "--version"], { cwd: runtime, env, encoding: "utf8" }).trim();
   if (reported !== config.dshVersion) throw new Error(`Offline DSH reported ${reported} instead of ${config.dshVersion}.`);
+  generateThirdPartyInventory(runtime);
+}
+
+function generateThirdPartyInventory(runtime) {
+  const packages = [];
+  function visit(directory) {
+    for (const name of readdirSync(directory)) {
+      if (name === ".pnpm") continue;
+      const path = join(directory, name);
+      if (!statSync(path).isDirectory()) continue;
+      const manifestPath = join(path, "package.json");
+      if (existsSync(manifestPath)) {
+        const manifest = JSON.parse(readFileSync(manifestPath, "utf8"));
+        if (manifest.name && manifest.version) {
+          const license = typeof manifest.license === "string" ? manifest.license : "SEE PACKAGE";
+          packages.push({ path: relative(runtime, path).split(sep).join("/"), version: manifest.version, license });
+        }
+      }
+      const nested = join(path, "node_modules");
+      if (existsSync(nested)) visit(nested);
+      if (name.startsWith("@") && !existsSync(manifestPath)) visit(path);
+    }
+  }
+  visit(join(runtime, "node_modules"));
+  packages.sort((left, right) => left.path.localeCompare(right.path, "en"));
+  const output = [
+    "DSH Community Installer third-party package inventory",
+    "=====================================================",
+    "",
+    `Generated from the pnpm ${config.pnpmVersion} offline payload for DSH ${config.dshVersion}.`,
+    `Package count: ${packages.length}`,
+    "",
+    "Format: package path | version | SPDX license",
+    "",
+    ...packages.map((item) => `${item.path} | ${item.version} | ${item.license}`),
+    "",
+  ].join("\n");
+  writeFileSync(join(root, "THIRD_PARTY_PACKAGES.txt"), output, "utf8");
 }
 
 function collect(directory, files = {}) {

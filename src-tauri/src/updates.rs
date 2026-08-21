@@ -1,12 +1,11 @@
 use std::{
-    collections::{BTreeMap, BTreeSet},
+    collections::BTreeMap,
     fs,
     path::Path,
     sync::{Arc, atomic::Ordering},
     time::Duration,
 };
 
-use chrono::Utc;
 use tauri::{AppHandle, Emitter, Manager};
 
 use crate::{
@@ -14,25 +13,36 @@ use crate::{
     model::{UpdateDecision, UpdatePhase, UpdateState, UpdateTarget},
 };
 
-const SCRIPT_POLICY: &[u8] = include_bytes!("../../payload/script-policy.json");
-
-#[derive(serde::Deserialize)]
-#[serde(rename_all = "camelCase")]
-struct ScriptPolicy {
-    schema_version: u32,
-    allowed: BTreeSet<String>,
-}
-
 pub async fn check(
     app: AppHandle,
     controller: Arc<Controller>,
     manual: bool,
 ) -> Result<(), String> {
+    check_with_mode(app, controller, manual, false).await
+}
+
+async fn check_with_mode(
+    app: AppHandle,
+    controller: Arc<Controller>,
+    manual: bool,
+    notify_available: bool,
+) -> Result<(), String> {
     if controller.update_running.swap(true, Ordering::SeqCst) {
+        if manual {
+            show_prompt(&app);
+        }
         return Ok(());
     }
-    let result = check_inner(&app, &controller, manual).await;
+    controller.update_cancel.store(false, Ordering::SeqCst);
+    let result = check_inner(&app, &controller, manual, notify_available).await;
     controller.update_running.store(false, Ordering::SeqCst);
+    if result
+        .as_ref()
+        .is_err_and(|error| error == crate::runtime::UPDATE_PAUSED_ERROR)
+    {
+        set_update(&app, &controller, None).await;
+        return Ok(());
+    }
     match completion_notice_phase(manual, &result) {
         Some(UpdatePhase::Current) => {
             set_update(
@@ -43,6 +53,12 @@ pub async fn check(
                     phase: UpdatePhase::Current,
                     version: None,
                     progress: None,
+                    resolved_items: None,
+                    reused_items: None,
+                    downloaded_items: None,
+                    added_items: None,
+                    total_items: None,
+                    elapsed_seconds: None,
                     message_key: "upToDate".to_owned(),
                 }),
             )
@@ -51,9 +67,6 @@ pub async fn check(
         }
         Some(UpdatePhase::Failed) => {
             let message_key = match result.as_ref().err() {
-                Some(error) if error.contains("unapproved install scripts") => {
-                    "scriptPolicyBlocked"
-                }
                 Some(error) if error.contains("requires a newer private Node.js runtime") => {
                     "nodeVersionBlocked"
                 }
@@ -67,6 +80,12 @@ pub async fn check(
                     phase: UpdatePhase::Failed,
                     version: None,
                     progress: None,
+                    resolved_items: None,
+                    reused_items: None,
+                    downloaded_items: None,
+                    added_items: None,
+                    total_items: None,
+                    elapsed_seconds: None,
                     message_key: message_key.to_owned(),
                 }),
             )
@@ -86,13 +105,9 @@ async fn check_inner(
     app: &AppHandle,
     controller: &Arc<Controller>,
     manual: bool,
+    notify_available: bool,
 ) -> Result<bool, String> {
     let _maintenance = controller.maintenance.lock().await;
-    {
-        let mut settings = controller.settings.write().await;
-        settings.controller.last_attempt_utc = Some(Utc::now());
-        settings.save(&controller.paths.settings)?;
-    }
     set_update(
         app,
         controller,
@@ -101,24 +116,26 @@ async fn check_inner(
             phase: UpdatePhase::Checking,
             version: None,
             progress: None,
+            resolved_items: None,
+            reused_items: None,
+            downloaded_items: None,
+            added_items: None,
+            total_items: None,
+            elapsed_seconds: None,
             message_key: "checkingUpdates".to_owned(),
         }),
     )
     .await;
-    let controller_result = check_controller(app, controller, manual).await;
-    if controller_result.is_ok() {
-        record_success(controller, UpdateTarget::Controller).await?;
+    if manual {
+        show_prompt(app);
     }
-    let should_check_dsh = manual || controller.settings.read().await.auto_download;
+    let controller_result = check_controller(app, controller, manual, notify_available).await;
+    let should_check_dsh = manual || controller.settings.read().await.auto_check_dsh_updates;
     let result = match controller_result {
         Ok(true) => Ok(true),
         Ok(false) if !should_check_dsh => Ok(false),
         Ok(false) => {
-            record_attempt(controller, UpdateTarget::Dsh).await?;
-            let dsh_result = check_dsh(app, controller, manual).await;
-            if dsh_result.is_ok() {
-                record_success(controller, UpdateTarget::Dsh).await?;
-            }
+            let dsh_result = check_dsh(app, controller, manual, notify_available).await;
             merge_update_results(None, dsh_result)
         }
         Err(controller_error) if !should_check_dsh => Err(format!(
@@ -130,11 +147,7 @@ async fn check_inner(
                 "app",
                 format!("Controller update check failed: {controller_error}"),
             );
-            record_attempt(controller, UpdateTarget::Dsh).await?;
-            let dsh_result = check_dsh(app, controller, manual).await;
-            if dsh_result.is_ok() {
-                record_success(controller, UpdateTarget::Dsh).await?;
-            }
+            let dsh_result = check_dsh(app, controller, manual, notify_available).await;
             merge_update_results(Some(controller_error), dsh_result)
         }
     };
@@ -144,26 +157,6 @@ async fn check_inner(
             .write(app, "app", format!("Update check failed: {error}"));
     }
     result
-}
-
-async fn record_attempt(controller: &Arc<Controller>, target: UpdateTarget) -> Result<(), String> {
-    let mut settings = controller.settings.write().await;
-    let channel = match target {
-        UpdateTarget::Controller => &mut settings.controller,
-        UpdateTarget::Dsh => &mut settings.dsh,
-    };
-    channel.last_attempt_utc = Some(Utc::now());
-    settings.save(&controller.paths.settings)
-}
-
-async fn record_success(controller: &Arc<Controller>, target: UpdateTarget) -> Result<(), String> {
-    let mut settings = controller.settings.write().await;
-    let channel = match target {
-        UpdateTarget::Controller => &mut settings.controller,
-        UpdateTarget::Dsh => &mut settings.dsh,
-    };
-    channel.last_successful_check_utc = Some(Utc::now());
-    settings.save(&controller.paths.settings)
 }
 
 fn merge_update_results(
@@ -218,13 +211,15 @@ pub async fn respond(
         }
         UpdateDecision::Skip => {
             let mut settings = controller.settings.write().await;
-            let channel = if target == UpdateTarget::Controller {
-                &mut settings.controller
-            } else {
-                &mut settings.dsh
-            };
-            channel.skipped_version = Some(version.clone());
-            channel.staged_version = None;
+            match target {
+                UpdateTarget::Controller => {
+                    settings.controller.skipped_version = Some(version.clone());
+                }
+                UpdateTarget::Dsh => {
+                    settings.dsh.skipped_version = Some(version.clone());
+                    settings.dsh.staged_version = None;
+                }
+            }
             settings.save(&controller.paths.settings)?;
             if target == UpdateTarget::Dsh {
                 let stage = controller.paths.staging.join(format!("update-{version}"));
@@ -236,6 +231,32 @@ pub async fn respond(
             }
         }
         UpdateDecision::Install => {
+            if target == UpdateTarget::Dsh && update.phase == UpdatePhase::Available {
+                controller.update_cancel.store(false, Ordering::SeqCst);
+                controller.update_running.store(true, Ordering::SeqCst);
+                set_dsh_indeterminate_state(
+                    &app,
+                    &controller,
+                    &version,
+                    UpdatePhase::Checking,
+                    "downloadingUpdate",
+                )
+                .await;
+                show_prompt(&app);
+                let prepare_result = prepare_confirmed_dsh(&app, &controller, &version).await;
+                controller.update_running.store(false, Ordering::SeqCst);
+                if prepare_result
+                    .as_ref()
+                    .is_err_and(|error| error == crate::runtime::UPDATE_PAUSED_ERROR)
+                {
+                    set_update(&app, &controller, None).await;
+                    return Ok(());
+                }
+                if let Err(error) = prepare_result {
+                    show_update_failure(&app, &controller, target, version, &error).await;
+                    return Err(error);
+                }
+            }
             set_update(
                 &app,
                 &controller,
@@ -243,41 +264,98 @@ pub async fn respond(
                     target,
                     phase: UpdatePhase::Installing,
                     version: Some(version.clone()),
-                    progress: None,
+                    progress: Some(if target == UpdateTarget::Dsh {
+                        72.0
+                    } else {
+                        10.0
+                    }),
+                    resolved_items: None,
+                    reused_items: None,
+                    downloaded_items: None,
+                    added_items: None,
+                    total_items: None,
+                    elapsed_seconds: None,
                     message_key: "installingUpdate".to_owned(),
                 }),
             )
             .await;
+            show_prompt(&app);
             let result = match target {
                 UpdateTarget::Controller => install_controller(&app, &controller, &version).await,
                 UpdateTarget::Dsh => install_dsh(&app, &controller, &version).await,
             };
             if let Err(error) = result {
-                controller
-                    .logs
-                    .write(&app, "app", format!("Update installation failed: {error}"));
-                set_update(
-                    &app,
-                    &controller,
-                    Some(UpdateState {
-                        target,
-                        phase: UpdatePhase::Failed,
-                        version: Some(version),
-                        progress: None,
-                        message_key: if error.contains("unapproved install scripts") {
-                            "scriptPolicyBlocked".to_owned()
-                        } else {
-                            "updateInstallFailed".to_owned()
-                        },
-                    }),
-                )
-                .await;
-                show_prompt(&app);
+                show_update_failure(&app, &controller, target, version, &error).await;
                 return Err(error);
             }
         }
     }
     Ok(())
+}
+
+async fn prepare_confirmed_dsh(
+    app: &AppHandle,
+    controller: &Arc<Controller>,
+    version: &str,
+) -> Result<(), String> {
+    ensure_update_not_paused(controller)?;
+    let metadata = registry_metadata_for_version(fetch_registry_packument().await?, version)?;
+    if let Some(requirement) = metadata
+        .engines
+        .as_ref()
+        .and_then(|engines| engines.node.as_deref())
+        && !node_satisfies(requirement)?
+    {
+        return Err("This DSH release requires a newer private Node.js runtime.".to_owned());
+    }
+    set_dsh_indeterminate_state(
+        app,
+        controller,
+        version,
+        UpdatePhase::Checking,
+        "downloadingUpdate",
+    )
+    .await;
+    controller.logs.write(
+        app,
+        "app",
+        format!("Downloading and validating DSH {version} after user confirmation."),
+    );
+    stage_dsh(app, controller, version).await?;
+    let mut settings = controller.settings.write().await;
+    settings.dsh.staged_version = Some(version.to_owned());
+    settings.save(&controller.paths.settings)
+}
+
+async fn show_update_failure(
+    app: &AppHandle,
+    controller: &Arc<Controller>,
+    target: UpdateTarget,
+    version: String,
+    error: &str,
+) {
+    controller
+        .logs
+        .write(app, "app", format!("Update installation failed: {error}"));
+    set_update(
+        app,
+        controller,
+        Some(UpdateState {
+            target,
+            phase: UpdatePhase::Failed,
+            version: Some(version),
+            progress: None,
+            resolved_items: None,
+            reused_items: None,
+            downloaded_items: None,
+            added_items: None,
+            total_items: None,
+            elapsed_seconds: None,
+            message_key: "updateInstallFailed".to_owned(),
+        }),
+    )
+    .await;
+    show_prompt(app);
 }
 
 fn update_request_matches(update: &UpdateState, target: UpdateTarget, version: &str) -> bool {
@@ -291,9 +369,14 @@ pub fn schedule(app: AppHandle, controller: Arc<Controller>) {
         return;
     }
     tauri::async_runtime::spawn(async move {
-        tokio::time::sleep(Duration::from_secs(120)).await;
+        let mut first_check = true;
         loop {
-            let result = check(app.clone(), controller.clone(), false).await;
+            if !controller.settings.read().await.auto_check_dsh_updates {
+                tokio::time::sleep(Duration::from_secs(60)).await;
+                continue;
+            }
+            let result = check_with_mode(app.clone(), controller.clone(), false, first_check).await;
+            first_check = false;
             let delay = if result.is_ok() {
                 24 * 60 * 60
             } else {
@@ -308,6 +391,7 @@ async fn check_controller(
     app: &AppHandle,
     controller: &Arc<Controller>,
     manual: bool,
+    notify_available: bool,
 ) -> Result<bool, String> {
     use tauri_plugin_updater::UpdaterExt;
     let update = app
@@ -333,6 +417,7 @@ async fn check_controller(
         return Ok(false);
     }
     let notify = manual
+        || notify_available
         || controller
             .settings
             .read()
@@ -348,7 +433,6 @@ async fn check_controller(
     );
     {
         let mut settings = controller.settings.write().await;
-        settings.controller.staged_version = None;
         settings.controller.last_notified_version = Some(version.clone());
         settings.save(&controller.paths.settings)?;
     }
@@ -360,6 +444,12 @@ async fn check_controller(
             phase: UpdatePhase::Available,
             version: Some(version),
             progress: None,
+            resolved_items: None,
+            reused_items: None,
+            downloaded_items: None,
+            added_items: None,
+            total_items: None,
+            elapsed_seconds: None,
             message_key: "controllerUpdate".to_owned(),
         }),
     )
@@ -371,11 +461,6 @@ async fn check_controller(
 }
 
 #[derive(serde::Deserialize)]
-struct RegistryDist {
-    integrity: String,
-}
-
-#[derive(serde::Deserialize)]
 struct RegistryEngines {
     node: Option<String>,
 }
@@ -384,17 +469,86 @@ struct RegistryEngines {
 struct RegistryMetadata {
     name: String,
     version: String,
-    dist: RegistryDist,
     engines: Option<RegistryEngines>,
 }
 
-async fn check_dsh(
-    app: &AppHandle,
-    controller: &Arc<Controller>,
-    manual: bool,
-) -> Result<bool, String> {
-    let metadata: RegistryMetadata = reqwest::Client::new()
-        .get("https://registry.npmjs.org/@deepseek-ai%2Fdsh/latest")
+#[derive(serde::Deserialize)]
+struct RegistryPackument {
+    name: String,
+    #[serde(rename = "dist-tags")]
+    dist_tags: BTreeMap<String, String>,
+    versions: BTreeMap<String, RegistryMetadata>,
+}
+
+fn dsh_registry_url() -> String {
+    "https://registry.npmjs.org/@deepseek-ai%2Fdsh".to_owned()
+}
+
+fn configured_dsh_dist_tags() -> Result<Vec<String>, String> {
+    let tags: Vec<String> =
+        serde_json::from_str(crate::model::DSH_DIST_TAGS).map_err(|error| error.to_string())?;
+    if tags.is_empty() {
+        return Err("No npm distribution tags are configured for DSH updates.".to_owned());
+    }
+    Ok(tags)
+}
+
+fn select_registry_candidates(
+    mut packument: RegistryPackument,
+    tags: &[String],
+) -> Result<Vec<RegistryMetadata>, String> {
+    if packument.name != "@deepseek-ai/dsh" {
+        return Err("The npm registry returned an unexpected package.".to_owned());
+    }
+    let mut selected = BTreeMap::new();
+    for tag in tags {
+        let Some(version_text) = packument.dist_tags.get(tag) else {
+            continue;
+        };
+        let metadata = packument
+            .versions
+            .get(version_text)
+            .ok_or_else(|| format!("The npm registry tag {tag} points to missing DSH metadata."))?;
+        if metadata.name != packument.name || metadata.version != *version_text {
+            return Err(format!(
+                "The npm registry returned inconsistent DSH metadata for tag {tag}."
+            ));
+        }
+        let version = semver::Version::parse(version_text).map_err(|error| {
+            format!("The npm registry tag {tag} has an invalid DSH version: {error}")
+        })?;
+        selected.insert(version, version_text.clone());
+    }
+    if selected.is_empty() {
+        return Err("The npm registry returned no configured DSH releases.".to_owned());
+    }
+    selected
+        .into_iter()
+        .rev()
+        .map(|(_, version)| {
+            packument
+                .versions
+                .remove(&version)
+                .ok_or_else(|| "The selected DSH release metadata is missing.".to_owned())
+        })
+        .collect()
+}
+
+#[cfg(test)]
+fn select_registry_metadata(
+    packument: RegistryPackument,
+    tags: &[String],
+) -> Result<RegistryMetadata, String> {
+    select_registry_candidates(packument, tags)?
+        .into_iter()
+        .next()
+        .ok_or_else(|| "The npm registry returned no configured DSH releases.".to_owned())
+}
+
+async fn fetch_registry_packument() -> Result<RegistryPackument, String> {
+    reqwest::Client::new()
+        .get(dsh_registry_url())
+        .header("Accept", "application/vnd.npm.install-v1+json")
         .send()
         .await
         .map_err(|error| error.to_string())?
@@ -402,13 +556,77 @@ async fn check_dsh(
         .map_err(|error| error.to_string())?
         .json()
         .await
-        .map_err(|error| error.to_string())?;
+        .map_err(|error| error.to_string())
+}
+
+fn registry_metadata_for_version(
+    mut packument: RegistryPackument,
+    version: &str,
+) -> Result<RegistryMetadata, String> {
+    if packument.name != "@deepseek-ai/dsh" {
+        return Err("The npm registry returned an unexpected package.".to_owned());
+    }
+    let metadata = packument
+        .versions
+        .remove(version)
+        .ok_or_else(|| "The confirmed DSH release is no longer available.".to_owned())?;
+    if metadata.name != packument.name || metadata.version != version {
+        return Err("The confirmed DSH release metadata is inconsistent.".to_owned());
+    }
+    Ok(metadata)
+}
+
+async fn select_compatible_registry_metadata(
+    _app: &AppHandle,
+    _controller: &Arc<Controller>,
+    packument: RegistryPackument,
+) -> Result<RegistryMetadata, String> {
+    for metadata in select_registry_candidates(packument, &configured_dsh_dist_tags()?)? {
+        let requirement = metadata
+            .engines
+            .as_ref()
+            .and_then(|engines| engines.node.as_deref());
+        let compatible = match requirement {
+            Some(requirement) => node_satisfies(requirement)?,
+            None => true,
+        };
+        if compatible {
+            return Ok(metadata);
+        }
+    }
+    Err("This DSH release requires a newer private Node.js runtime.".to_owned())
+}
+
+pub(crate) async fn latest_compatible_dsh_version(
+    app: &AppHandle,
+    controller: &Arc<Controller>,
+) -> Result<String, String> {
+    Ok(
+        select_compatible_registry_metadata(app, controller, fetch_registry_packument().await?)
+            .await?
+            .version,
+    )
+}
+
+async fn check_dsh(
+    app: &AppHandle,
+    controller: &Arc<Controller>,
+    manual: bool,
+    notify_available: bool,
+) -> Result<bool, String> {
+    ensure_update_not_paused(controller)?;
+    let packument = fetch_registry_packument().await?;
+    ensure_update_not_paused(controller)?;
+    let metadata = match select_compatible_registry_metadata(app, controller, packument).await {
+        Ok(metadata) => metadata,
+        Err(error) if !manual && error.contains("requires a newer private Node.js runtime") => {
+            return Ok(false);
+        }
+        Err(error) => return Err(error),
+    };
     let current = semver::Version::parse(&controller.snapshot.read().await.dsh_version)
         .map_err(|error| error.to_string())?;
     let latest = semver::Version::parse(&metadata.version).map_err(|error| error.to_string())?;
-    if metadata.name != "@deepseek-ai/dsh" {
-        return Err("The npm registry returned an unexpected package.".to_owned());
-    }
     if latest <= current
         || (!manual
             && controller
@@ -422,35 +640,8 @@ async fn check_dsh(
     {
         return Ok(false);
     }
-    {
-        let settings = controller.settings.read().await;
-        if settings.dsh.blocked_version.as_deref() == Some(metadata.version.as_str())
-            && settings.dsh.blocked_node_version.as_deref() == Some(crate::model::NODE_VERSION)
-        {
-            return Err("This DSH release requires a newer private Node.js runtime.".to_owned());
-        }
-    }
-    if let Some(requirement) = metadata
-        .engines
-        .as_ref()
-        .and_then(|engines| engines.node.as_deref())
-        && !node_satisfies(app, controller, requirement).await?
-    {
-        let mut settings = controller.settings.write().await;
-        settings.dsh.blocked_version = Some(metadata.version.clone());
-        settings.dsh.blocked_node_version = Some(crate::model::NODE_VERSION.to_owned());
-        settings.save(&controller.paths.settings)?;
-        return Err("This DSH release requires a newer private Node.js runtime.".to_owned());
-    }
-    {
-        let mut settings = controller.settings.write().await;
-        if settings.dsh.blocked_version.take().is_some()
-            || settings.dsh.blocked_node_version.take().is_some()
-        {
-            settings.save(&controller.paths.settings)?;
-        }
-    }
     let notify = manual
+        || notify_available
         || controller
             .settings
             .read()
@@ -459,13 +650,8 @@ async fn check_dsh(
             .last_notified_version
             .as_deref()
             != Some(&metadata.version);
-    if !staged_dsh_is_valid(
-        &controller.paths,
-        &metadata.version,
-        &metadata.dist.integrity,
-    )? {
-        stage_dsh(app, controller, &metadata.version, &metadata.dist.integrity).await?;
-    } else {
+    let staged = staged_dsh_is_valid(app, controller, &metadata.version).await?;
+    if staged {
         controller.logs.write(
             app,
             "app",
@@ -474,7 +660,7 @@ async fn check_dsh(
     }
     {
         let mut settings = controller.settings.write().await;
-        settings.dsh.staged_version = Some(metadata.version.clone());
+        settings.dsh.staged_version = staged.then(|| metadata.version.clone());
         settings.dsh.last_notified_version = Some(metadata.version.clone());
         settings.save(&controller.paths.settings)?;
     }
@@ -483,10 +669,24 @@ async fn check_dsh(
         controller,
         Some(UpdateState {
             target: UpdateTarget::Dsh,
-            phase: UpdatePhase::Ready,
+            phase: if staged {
+                UpdatePhase::Ready
+            } else {
+                UpdatePhase::Available
+            },
             version: Some(metadata.version),
-            progress: Some(100.0),
-            message_key: "dshUpdate".to_owned(),
+            progress: staged.then_some(100.0),
+            resolved_items: None,
+            reused_items: None,
+            downloaded_items: None,
+            added_items: None,
+            total_items: None,
+            elapsed_seconds: None,
+            message_key: if staged {
+                "dshUpdate".to_owned()
+            } else {
+                "dshUpdateAvailable".to_owned()
+            },
         }),
     )
     .await;
@@ -500,8 +700,8 @@ async fn stage_dsh(
     app: &AppHandle,
     controller: &Arc<Controller>,
     version: &str,
-    expected_integrity: &str,
 ) -> Result<(), String> {
+    ensure_update_not_paused(controller)?;
     if fs2::available_space(&controller.paths.root).map_err(|error| error.to_string())?
         < 700 * 1024 * 1024
     {
@@ -519,7 +719,7 @@ async fn stage_dsh(
         "name": "dsh-community-staged-runtime",
         "version": "1.0.0",
         "private": true,
-        "allowScripts": {},
+        "packageManager": format!("pnpm@{}", crate::model::PNPM_VERSION),
         "dependencies": { "@deepseek-ai/dsh": version }
     });
     fs::write(
@@ -527,192 +727,98 @@ async fn stage_dsh(
         serde_json::to_vec_pretty(&manifest).map_err(|error| error.to_string())?,
     )
     .map_err(|error| error.to_string())?;
-    crate::runtime::run_npm(
+    let (sender, mut receiver) = tokio::sync::mpsc::unbounded_channel();
+    let progress_app = app.clone();
+    let progress_controller = controller.clone();
+    let progress_version = version.to_owned();
+    let progress_task = tokio::spawn(async move {
+        while let Some(pnpm) = receiver.recv().await {
+            set_dsh_package_state(
+                &progress_app,
+                &progress_controller,
+                &progress_version,
+                &pnpm,
+            )
+            .await;
+        }
+    });
+    let pnpm_result = crate::runtime::run_pnpm(
         app,
         controller,
-        &[
-            "install",
-            "--omit=dev",
-            "--no-audit",
-            "--no-fund",
-            "--ignore-scripts",
-            "--package-lock=true",
-            "--registry=https://registry.npmjs.org/",
-        ],
         &runtime,
-        Duration::from_secs(900),
+        Duration::from_secs(1200),
+        true,
+        sender,
     )
-    .await?;
-    let installed: serde_json::Value = serde_json::from_slice(
-        &fs::read(runtime.join("node_modules/@deepseek-ai/dsh/package.json"))
-            .map_err(|error| error.to_string())?,
+    .await;
+    let _ = progress_task.await;
+    if let Err(error) = pnpm_result {
+        let _ = fs::remove_dir_all(&stage);
+        return Err(error);
+    }
+    ensure_update_not_paused(controller)?;
+    set_dsh_work_state(
+        app,
+        controller,
+        version,
+        UpdatePhase::Checking,
+        "verifyingUpdate",
+        90.0,
     )
-    .map_err(|error| error.to_string())?;
+    .await;
+    let installed = fs::read(runtime.join("node_modules/@deepseek-ai/dsh/package.json"))
+        .map_err(|error| error.to_string())
+        .and_then(|bytes| {
+            serde_json::from_slice::<serde_json::Value>(&bytes).map_err(|error| error.to_string())
+        });
+    let installed = match installed {
+        Ok(installed) => installed,
+        Err(error) => {
+            let _ = fs::remove_dir_all(&stage);
+            return Err(error);
+        }
+    };
     if installed.get("version").and_then(|value| value.as_str()) != Some(version) {
         let _ = fs::remove_dir_all(stage);
         return Err("The staged DSH package version is invalid.".to_owned());
     }
-    let lock: serde_json::Value = serde_json::from_slice(
-        &fs::read(runtime.join("package-lock.json")).map_err(|error| error.to_string())?,
-    )
-    .map_err(|error| error.to_string())?;
-    let locked = &lock["packages"]["node_modules/@deepseek-ai/dsh"];
-    if locked["version"].as_str() != Some(version)
-        || locked["integrity"].as_str() != Some(expected_integrity)
-    {
-        let _ = fs::remove_dir_all(stage);
-        return Err("The staged npm lock entry failed integrity validation.".to_owned());
-    }
-    write_staged_script_policy(&runtime)?;
     Ok(())
 }
 
-fn staged_dsh_is_valid(
-    paths: &crate::paths::AppPaths,
-    version: &str,
-    expected_integrity: &str,
-) -> Result<bool, String> {
-    let stage = paths.staging.join(format!("update-{version}"));
-    let runtime = stage.join("runtime");
-    if crate::runtime::resolve_candidate(paths, &stage, version).is_err() {
-        return Ok(false);
-    }
-    let Ok(bytes) = fs::read(runtime.join("package-lock.json")) else {
-        return Ok(false);
-    };
-    let Ok(lock) = serde_json::from_slice::<serde_json::Value>(&bytes) else {
-        return Ok(false);
-    };
-    let locked = &lock["packages"]["node_modules/@deepseek-ai/dsh"];
-    if locked["version"].as_str() != Some(version)
-        || locked["integrity"].as_str() != Some(expected_integrity)
-    {
-        return Ok(false);
-    }
-    match validate_script_policy(&runtime) {
-        Ok(_) => Ok(true),
-        Err(error) if error.contains("unapproved install scripts") => Err(error),
-        Err(_) => Ok(false),
-    }
-}
-
-fn write_staged_script_policy(runtime: &Path) -> Result<(), String> {
-    let requested = validate_script_policy(runtime)?;
-    let policy: BTreeMap<_, _> = requested
-        .into_iter()
-        .map(|package| (package, true))
-        .collect();
-    let manifest_path = runtime.join("package.json");
-    let mut manifest: serde_json::Value =
-        serde_json::from_slice(&fs::read(&manifest_path).map_err(|error| error.to_string())?)
-            .map_err(|error| error.to_string())?;
-    manifest["allowScripts"] = serde_json::to_value(policy).map_err(|error| error.to_string())?;
-    let mut bytes = serde_json::to_vec_pretty(&manifest).map_err(|error| error.to_string())?;
-    bytes.push(b'\n');
-    crate::atomic_file::write(&manifest_path, &bytes)
-}
-
-fn validate_script_policy(runtime: &Path) -> Result<BTreeSet<String>, String> {
-    let policy: ScriptPolicy =
-        serde_json::from_slice(SCRIPT_POLICY).map_err(|error| error.to_string())?;
-    if policy.schema_version != 1 {
-        return Err("The install script policy version is unsupported.".to_owned());
-    }
-    let mut requested = BTreeSet::new();
-    inspect_node_modules(&runtime.join("node_modules"), &mut requested)?;
-    let unknown: Vec<_> = requested.difference(&policy.allowed).cloned().collect();
-    if !unknown.is_empty() {
-        return Err(format!(
-            "The DSH update was blocked because it requests unapproved install scripts: {}",
-            unknown.join(", ")
-        ));
-    }
-    Ok(requested)
-}
-
-fn inspect_package(path: &Path, packages: &mut BTreeSet<String>) -> Result<(), String> {
-    let manifest = path.join("package.json");
-    if manifest.is_file() {
-        let value: serde_json::Value =
-            serde_json::from_slice(&fs::read(&manifest).map_err(|error| error.to_string())?)
-                .map_err(|error| error.to_string())?;
-        let has_install_script = value
-            .get("scripts")
-            .and_then(|scripts| scripts.as_object())
-            .is_some_and(|scripts| {
-                ["preinstall", "install", "postinstall", "prepare"]
-                    .iter()
-                    .any(|name| scripts.get(*name).is_some_and(|script| script.is_string()))
-            });
-        if has_install_script {
-            let name = value
-                .get("name")
-                .and_then(|name| name.as_str())
-                .ok_or_else(|| format!("{} has no package name.", manifest.display()))?;
-            let version = value
-                .get("version")
-                .and_then(|version| version.as_str())
-                .ok_or_else(|| format!("{} has no package version.", manifest.display()))?;
-            packages.insert(format!("{name}@{version}"));
-        }
-    }
-    let nested = path.join("node_modules");
-    if nested.is_dir() {
-        inspect_node_modules(&nested, packages)?;
-    }
-    Ok(())
-}
-
-fn inspect_node_modules(directory: &Path, packages: &mut BTreeSet<String>) -> Result<(), String> {
-    for entry in fs::read_dir(directory).map_err(|error| error.to_string())? {
-        let entry = entry.map_err(|error| error.to_string())?;
-        if !entry
-            .file_type()
-            .map_err(|error| error.to_string())?
-            .is_dir()
-        {
-            continue;
-        }
-        let path = entry.path();
-        if entry.file_name().to_string_lossy().starts_with('@') {
-            for scoped in fs::read_dir(&path).map_err(|error| error.to_string())? {
-                let scoped = scoped.map_err(|error| error.to_string())?;
-                if scoped
-                    .file_type()
-                    .map_err(|error| error.to_string())?
-                    .is_dir()
-                {
-                    inspect_package(&scoped.path(), packages)?;
-                }
-            }
-        } else {
-            inspect_package(&path, packages)?;
-        }
-    }
-    Ok(())
-}
-
-async fn node_satisfies(
+async fn staged_dsh_is_valid(
     app: &AppHandle,
     controller: &Arc<Controller>,
-    requirement: &str,
+    version: &str,
 ) -> Result<bool, String> {
-    let script = "const path=require('path');const semver=require(path.join(process.argv[1],'node_modules','npm','node_modules','semver'));process.exit(semver.satisfies(process.version,process.argv[2],{includePrerelease:true})?0:42)";
-    let node_root = controller.paths.node_root.to_string_lossy().to_string();
-    let result = crate::runtime::run_checked(
-        app,
-        controller,
-        &controller.paths.node_executable(),
-        &["-e", script, &node_root, requirement],
-        &controller.paths.root,
-        Duration::from_secs(30),
-    )
-    .await;
-    match result {
-        Ok(_) => Ok(true),
-        Err(error) if error.contains("42") => Ok(false),
-        Err(error) => Err(error),
+    let stage = controller.paths.staging.join(format!("update-{version}"));
+    let candidate = match crate::runtime::resolve_candidate(&controller.paths, &stage, version) {
+        Ok(candidate) => candidate,
+        Err(_) => return Ok(false),
+    };
+    if let Err(error) = crate::runtime::validate_runtime(app, controller, &candidate).await {
+        controller.logs.write(
+            app,
+            "app",
+            format!("Discarding invalid staged DSH {version}: {error}"),
+        );
+        fs::remove_dir_all(&stage).map_err(|remove_error| remove_error.to_string())?;
+        return Ok(false);
     }
+    Ok(true)
+}
+
+fn node_satisfies(requirement: &str) -> Result<bool, String> {
+    let node = semver::Version::parse(crate::model::NODE_VERSION)
+        .map_err(|error| format!("The private Node.js version is invalid: {error}"))?;
+    requirement.split("||").try_fold(false, |matched, clause| {
+        if matched {
+            return Ok(true);
+        }
+        let normalized = clause.split_whitespace().collect::<Vec<_>>().join(", ");
+        let requirement = semver::VersionReq::parse(&normalized)
+            .map_err(|error| format!("The DSH Node.js requirement is invalid: {error}"))?;
+        Ok(requirement.matches(&node))
+    })
 }
 
 async fn install_dsh(
@@ -721,18 +827,26 @@ async fn install_dsh(
     version: &str,
 ) -> Result<(), String> {
     let stage = controller.paths.staging.join(format!("update-{version}"));
-    let runtime = stage.join("runtime");
-    write_staged_script_policy(&runtime)?;
-    crate::runtime::run_npm(
+    set_dsh_work_state(
         app,
         controller,
-        &["rebuild", "--no-audit", "--no-fund"],
-        &runtime,
-        Duration::from_secs(900),
+        version,
+        UpdatePhase::Installing,
+        "validatingUpdate",
+        90.0,
     )
-    .await?;
+    .await;
     let staged_runtime = crate::runtime::resolve_candidate(&controller.paths, &stage, version)?;
     crate::runtime::validate_runtime(app, controller, &staged_runtime).await?;
+    set_dsh_work_state(
+        app,
+        controller,
+        version,
+        UpdatePhase::Installing,
+        "restartingUpdate",
+        93.0,
+    )
+    .await;
     crate::service::stop(controller).await;
     let target = controller.paths.root.join("dsh").join(version);
     if let Err(error) = crate::runtime::activate_directory(&stage, &target) {
@@ -761,6 +875,15 @@ async fn install_dsh(
             });
         }
     };
+    set_dsh_work_state(
+        app,
+        controller,
+        version,
+        UpdatePhase::Installing,
+        "testingUpdate",
+        95.0,
+    )
+    .await;
     if let Err(error) =
         crate::service::start_candidate_and_wait(app.clone(), controller.clone(), candidate).await
     {
@@ -778,6 +901,15 @@ async fn install_dsh(
     }
     // The pointer replacement is the transaction commit point. Failures after this
     // point cannot make a successfully activated runtime appear to have failed.
+    set_dsh_work_state(
+        app,
+        controller,
+        version,
+        UpdatePhase::Installing,
+        "activatingUpdate",
+        99.0,
+    )
+    .await;
     if let Err(error) = crate::runtime::activate_pointer(&controller.paths, version) {
         crate::service::stop(controller).await;
         discard_failed_candidate(app, controller, &target);
@@ -792,6 +924,15 @@ async fn install_dsh(
         });
     }
     controller.snapshot.write().await.dsh_version = version.to_owned();
+    set_dsh_work_state(
+        app,
+        controller,
+        version,
+        UpdatePhase::Installing,
+        "updateComplete",
+        100.0,
+    )
+    .await;
     {
         let mut settings = controller.settings.write().await;
         settings.dsh.staged_version = None;
@@ -922,10 +1063,128 @@ async fn set_update(app: &AppHandle, controller: &Arc<Controller>, update: Optio
     let _ = app.emit("ui://refresh", ());
 }
 
+async fn set_dsh_work_state(
+    app: &AppHandle,
+    controller: &Arc<Controller>,
+    version: &str,
+    phase: UpdatePhase,
+    message_key: &str,
+    progress: f64,
+) {
+    set_update(
+        app,
+        controller,
+        Some(UpdateState {
+            target: UpdateTarget::Dsh,
+            phase,
+            version: Some(version.to_owned()),
+            progress: Some(progress),
+            resolved_items: None,
+            reused_items: None,
+            downloaded_items: None,
+            added_items: None,
+            total_items: None,
+            elapsed_seconds: None,
+            message_key: message_key.to_owned(),
+        }),
+    )
+    .await;
+}
+
+async fn set_dsh_package_state(
+    app: &AppHandle,
+    controller: &Arc<Controller>,
+    version: &str,
+    pnpm: &crate::runtime::PnpmProgress,
+) {
+    let message_key = match pnpm.stage {
+        crate::runtime::PnpmStage::Preparing => "preparingPackageManager",
+        crate::runtime::PnpmStage::Resolving => "resolvingDependencies",
+        crate::runtime::PnpmStage::Importing => "installingPackages",
+        crate::runtime::PnpmStage::Lifecycle => "runningInstallScripts",
+    };
+    set_update(
+        app,
+        controller,
+        Some(UpdateState {
+            target: UpdateTarget::Dsh,
+            phase: UpdatePhase::Checking,
+            version: Some(version.to_owned()),
+            progress: Some(pnpm.percent()),
+            resolved_items: Some(pnpm.resolved_items),
+            reused_items: Some(pnpm.reused_items),
+            downloaded_items: Some(pnpm.downloaded_items),
+            added_items: Some(pnpm.added_items),
+            total_items: pnpm.total_items,
+            elapsed_seconds: Some(pnpm.elapsed_seconds),
+            message_key: message_key.to_owned(),
+        }),
+    )
+    .await;
+}
+
+async fn set_dsh_indeterminate_state(
+    app: &AppHandle,
+    controller: &Arc<Controller>,
+    version: &str,
+    phase: UpdatePhase,
+    message_key: &str,
+) {
+    set_update(
+        app,
+        controller,
+        Some(UpdateState {
+            target: UpdateTarget::Dsh,
+            phase,
+            version: Some(version.to_owned()),
+            progress: None,
+            resolved_items: None,
+            reused_items: None,
+            downloaded_items: None,
+            added_items: None,
+            total_items: None,
+            elapsed_seconds: None,
+            message_key: message_key.to_owned(),
+        }),
+    )
+    .await;
+}
+
 pub async fn dismiss_notice(app: &AppHandle, controller: &Arc<Controller>) {
     set_update(app, controller, None).await;
     if let Some(window) = app.get_webview_window("prompt") {
         let _ = window.hide();
+    }
+}
+
+pub async fn pause(app: &AppHandle, controller: &Arc<Controller>) -> Result<(), String> {
+    let update = controller.snapshot.read().await.update.clone();
+    if !controller.update_running.load(Ordering::SeqCst)
+        || !update.as_ref().is_some_and(is_pauseable_update)
+    {
+        return Err("No DSH download is currently running.".to_owned());
+    }
+    controller.update_cancel.store(true, Ordering::SeqCst);
+    controller.logs.write(
+        app,
+        "app",
+        "The DSH update download was paused by the user.",
+    );
+    if let Some(window) = app.get_webview_window("prompt") {
+        let _ = window.hide();
+    }
+    Ok(())
+}
+
+fn is_pauseable_update(update: &UpdateState) -> bool {
+    update.target == UpdateTarget::Dsh && update.phase == UpdatePhase::Checking
+}
+
+fn ensure_update_not_paused(controller: &Arc<Controller>) -> Result<(), String> {
+    if controller.update_cancel.load(Ordering::SeqCst) {
+        Err(crate::runtime::UPDATE_PAUSED_ERROR.to_owned())
+    } else {
+        Ok(())
     }
 }
 
@@ -938,60 +1197,44 @@ mod tests {
     use super::*;
 
     #[test]
-    fn staged_script_policy_pins_only_approved_installed_script_packages() {
-        let directory = tempfile::tempdir().unwrap();
-        let runtime = directory.path();
-        fs::write(runtime.join("package.json"), r#"{"private":true}"#).unwrap();
-        let scripted = runtime.join("node_modules/koffi");
-        let plain = runtime.join("node_modules/plain");
-        fs::create_dir_all(&scripted).unwrap();
-        fs::create_dir_all(&plain).unwrap();
-        fs::write(
-            scripted.join("package.json"),
-            r#"{"name":"koffi","version":"3.1.5","scripts":{"postinstall":"node setup.js"}}"#,
-        )
-        .unwrap();
-        fs::write(
-            plain.join("package.json"),
-            r#"{"name":"plain","version":"4.5.6"}"#,
-        )
-        .unwrap();
+    fn only_dsh_download_preparation_is_pauseable() {
+        let update = |target, phase| UpdateState {
+            target,
+            phase,
+            version: Some("1.0.0".to_owned()),
+            progress: Some(50.0),
+            resolved_items: None,
+            reused_items: None,
+            downloaded_items: None,
+            added_items: None,
+            total_items: None,
+            elapsed_seconds: None,
+            message_key: "downloadingUpdate".to_owned(),
+        };
 
-        write_staged_script_policy(runtime).unwrap();
-
-        let manifest: serde_json::Value =
-            serde_json::from_slice(&fs::read(runtime.join("package.json")).unwrap()).unwrap();
-        assert_eq!(manifest["allowScripts"]["koffi@3.1.5"], true);
-        assert!(manifest["allowScripts"].get("plain@4.5.6").is_none());
+        assert!(is_pauseable_update(&update(
+            UpdateTarget::Dsh,
+            UpdatePhase::Checking
+        )));
+        assert!(!is_pauseable_update(&update(
+            UpdateTarget::Controller,
+            UpdatePhase::Checking
+        )));
+        assert!(!is_pauseable_update(&update(
+            UpdateTarget::Dsh,
+            UpdatePhase::Installing
+        )));
     }
 
     #[test]
-    fn staged_script_policy_rejects_unknown_install_scripts() {
-        let directory = tempfile::tempdir().unwrap();
-        let runtime = directory.path();
-        fs::write(runtime.join("package.json"), r#"{"private":true}"#).unwrap();
-        let scripted = runtime.join("node_modules/unreviewed");
-        fs::create_dir_all(&scripted).unwrap();
-        fs::write(
-            scripted.join("package.json"),
-            r#"{"name":"unreviewed","version":"1.0.0","scripts":{"install":"node setup.js"}}"#,
-        )
-        .unwrap();
-
-        let error = write_staged_script_policy(runtime).unwrap_err();
-        assert!(error.contains("unreviewed@1.0.0"));
-    }
-
-    #[test]
-    fn validated_staged_dsh_can_be_reused_after_restart() {
+    fn staged_dsh_candidate_can_be_resolved_after_restart() {
         let directory = tempfile::tempdir().unwrap();
         let paths = crate::paths::AppPaths::from_root(directory.path().join("app"));
         fs::create_dir_all(paths.node_executable().parent().unwrap()).unwrap();
         fs::write(paths.node_executable(), b"node").unwrap();
-        fs::create_dir_all(paths.npm_cli().parent().unwrap()).unwrap();
-        fs::write(paths.npm_cli(), b"npm").unwrap();
+        fs::create_dir_all(paths.corepack_cli().parent().unwrap()).unwrap();
+        fs::write(paths.corepack_cli(), b"corepack").unwrap();
         let version = "0.1.0-rc.8";
-        let integrity = "sha512-test";
         let runtime = paths.staging.join(format!("update-{version}/runtime"));
         let package = runtime.join("node_modules/@deepseek-ai/dsh");
         fs::create_dir_all(package.join("bin")).unwrap();
@@ -1002,15 +1245,14 @@ mod tests {
         .unwrap();
         fs::write(package.join("bin/dsh.js"), b"dsh").unwrap();
         fs::write(runtime.join("package.json"), r#"{"private":true}"#).unwrap();
-        fs::write(
-            runtime.join("package-lock.json"),
-            format!(
-                r#"{{"packages":{{"node_modules/@deepseek-ai/dsh":{{"version":"{version}","integrity":"{integrity}"}}}}}}"#
-            ),
-        )
-        .unwrap();
-
-        assert!(staged_dsh_is_valid(&paths, version, integrity).unwrap());
+        assert!(
+            crate::runtime::resolve_candidate(
+                &paths,
+                &paths.staging.join(format!("update-{version}")),
+                version,
+            )
+            .is_ok()
+        );
     }
 
     #[test]
@@ -1031,6 +1273,80 @@ mod tests {
         );
     }
 
+    fn registry_metadata(version: &str) -> RegistryMetadata {
+        RegistryMetadata {
+            name: "@deepseek-ai/dsh".to_owned(),
+            version: version.to_owned(),
+            engines: None,
+        }
+    }
+
+    fn registry_packument(latest: Option<&str>, next: Option<&str>) -> RegistryPackument {
+        let mut dist_tags = BTreeMap::new();
+        let mut versions = BTreeMap::new();
+        for (tag, version) in [("latest", latest), ("next", next)] {
+            if let Some(version) = version {
+                dist_tags.insert(tag.to_owned(), version.to_owned());
+                versions.insert(version.to_owned(), registry_metadata(version));
+            }
+        }
+        RegistryPackument {
+            name: "@deepseek-ai/dsh".to_owned(),
+            dist_tags,
+            versions,
+        }
+    }
+
+    fn update_tags() -> Vec<String> {
+        vec!["latest".to_owned(), "next".to_owned()]
+    }
+
+    #[test]
+    fn dsh_update_feed_uses_the_package_packument() {
+        assert_eq!(
+            dsh_registry_url(),
+            "https://registry.npmjs.org/@deepseek-ai%2Fdsh"
+        );
+        assert_eq!(configured_dsh_dist_tags().unwrap(), update_tags());
+    }
+
+    #[test]
+    fn dsh_update_selects_the_highest_configured_release() {
+        let prerelease = select_registry_metadata(
+            registry_packument(Some("0.1.0-rc.7"), Some("0.1.0-rc.9")),
+            &update_tags(),
+        )
+        .unwrap();
+        assert_eq!(prerelease.version, "0.1.0-rc.9");
+
+        let stable = select_registry_metadata(
+            registry_packument(Some("0.1.0"), Some("0.1.0-rc.9")),
+            &update_tags(),
+        )
+        .unwrap();
+        assert_eq!(stable.version, "0.1.0");
+
+        let next_minor = select_registry_metadata(
+            registry_packument(Some("0.1.0"), Some("0.2.0-rc.1")),
+            &update_tags(),
+        )
+        .unwrap();
+        assert_eq!(next_minor.version, "0.2.0-rc.1");
+    }
+
+    #[test]
+    fn dsh_update_accepts_one_tag_but_rejects_no_candidates() {
+        let metadata =
+            select_registry_metadata(registry_packument(Some("0.1.0"), None), &update_tags())
+                .unwrap();
+        assert_eq!(metadata.version, "0.1.0");
+
+        let error = select_registry_metadata(registry_packument(None, None), &update_tags())
+            .err()
+            .unwrap();
+        assert!(error.contains("no configured DSH releases"));
+    }
+
     #[test]
     fn update_decision_must_match_target_version_and_phase() {
         let update = UpdateState {
@@ -1038,6 +1354,12 @@ mod tests {
             phase: UpdatePhase::Ready,
             version: Some("0.1.0-rc.8".to_owned()),
             progress: Some(100.0),
+            resolved_items: None,
+            reused_items: None,
+            downloaded_items: None,
+            added_items: None,
+            total_items: None,
+            elapsed_seconds: None,
             message_key: "dshUpdate".to_owned(),
         };
         assert!(update_request_matches(
@@ -1054,6 +1376,17 @@ mod tests {
             &update,
             UpdateTarget::Dsh,
             "0.1.0-rc.9"
+        ));
+        let available = UpdateState {
+            phase: UpdatePhase::Available,
+            progress: None,
+            message_key: "dshUpdateAvailable".to_owned(),
+            ..update
+        };
+        assert!(update_request_matches(
+            &available,
+            UpdateTarget::Dsh,
+            "0.1.0-rc.8"
         ));
     }
 

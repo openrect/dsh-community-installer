@@ -36,6 +36,7 @@ pub struct Controller {
     pub maintenance: Mutex<()>,
     pub setup_running: AtomicBool,
     pub update_running: AtomicBool,
+    pub update_cancel: AtomicBool,
     pub updates_scheduled: AtomicBool,
     pub tray_created: AtomicBool,
     pub shutdown: AtomicBool,
@@ -126,6 +127,12 @@ async fn begin_setup(
                         percent: controller.snapshot.read().await.progress,
                         message_key: message_key.to_owned(),
                         detail: Some(error),
+                        resolved_items: None,
+                        reused_items: None,
+                        downloaded_items: None,
+                        added_items: None,
+                        total_items: None,
+                        elapsed_seconds: None,
                     },
                 );
             }
@@ -180,15 +187,15 @@ async fn get_recent_logs(
 }
 
 #[tauri::command]
-async fn set_auto_download(
+async fn set_auto_check_dsh_updates(
     app: AppHandle,
     controller: tauri::State<'_, Arc<Controller>>,
     enabled: bool,
 ) -> Result<(), String> {
     let mut settings = controller.settings.write().await;
-    settings.auto_download = enabled;
+    settings.auto_check_dsh_updates = enabled;
     settings.save(&controller.paths.settings)?;
-    controller.snapshot.write().await.auto_download = enabled;
+    controller.snapshot.write().await.auto_check_dsh_updates = enabled;
     let _ = app.emit("ui://refresh", ());
     Ok(())
 }
@@ -237,13 +244,28 @@ async fn dismiss_update_notice(
 }
 
 #[tauri::command]
+async fn pause_update(
+    app: AppHandle,
+    controller: tauri::State<'_, Arc<Controller>>,
+) -> Result<(), String> {
+    updates::pause(&app, controller.inner()).await
+}
+
+#[tauri::command]
+async fn show_update_notice(app: AppHandle) -> Result<(), String> {
+    show_update_prompt(&app);
+    Ok(())
+}
+
+#[tauri::command]
 async fn show_exit_prompt(app: AppHandle) -> Result<(), String> {
     if let Some(window) = app.get_webview_window("prompt") {
         let _ = app.emit("ui://exit-prompt", ());
+        window.unminimize().map_err(|error| error.to_string())?;
         window.show().map_err(|error| error.to_string())?;
         return window.set_focus().map_err(|error| error.to_string());
     }
-    build_prompt_window(&app, "exit")
+    build_and_show_prompt(&app, "exit")
 }
 
 #[tauri::command]
@@ -263,12 +285,13 @@ async fn request_main_close_inner(
     match main_close_action(setup_running, setup_complete) {
         MainCloseAction::ConfirmSetupCancellation => {
             if let Some(window) = app.get_webview_window("prompt") {
+                window.unminimize().map_err(|error| error.to_string())?;
                 window.show().map_err(|error| error.to_string())?;
                 window.set_focus().map_err(|error| error.to_string())?;
                 let _ = app.emit("ui://cancel-setup", ());
                 return Ok(());
             }
-            build_prompt_window(app, "cancel-setup")
+            build_and_show_prompt(app, "cancel-setup")
         }
         MainCloseAction::HideToTray => {
             tray::ensure(app, controller).map_err(|error| error.to_string())?;
@@ -325,9 +348,9 @@ async fn exit_harness(
 
 fn create_controller(app: &tauri::App) -> Result<Arc<Controller>, String> {
     let paths = AppPaths::discover()?;
-    paths.ensure().map_err(|error| error.to_string())?;
+    paths::prepare_private_state(&paths)?;
     let mut settings = Settings::load(&paths.settings);
-    let mut settings_changed = settings.controller.staged_version.take().is_some();
+    let mut settings_changed = false;
     if !runtime::cleanup_staging(&paths, settings.dsh.staged_version.as_deref()) {
         settings_changed |= settings.dsh.staged_version.take().is_some();
     }
@@ -354,7 +377,7 @@ fn create_controller(app: &tauri::App) -> Result<Arc<Controller>, String> {
     let mut snapshot = AppSnapshot::new(
         settings.locale,
         edition,
-        settings.auto_download,
+        settings.auto_check_dsh_updates,
         setup_complete,
     );
     if let Some(runtime) = resolved {
@@ -371,6 +394,12 @@ fn create_controller(app: &tauri::App) -> Result<Arc<Controller>, String> {
             phase: UpdatePhase::Ready,
             version: Some(version.clone()),
             progress: Some(100.0),
+            resolved_items: None,
+            reused_items: None,
+            downloaded_items: None,
+            added_items: None,
+            total_items: None,
+            elapsed_seconds: None,
             message_key: "dshUpdate".to_owned(),
         });
     }
@@ -384,6 +413,7 @@ fn create_controller(app: &tauri::App) -> Result<Arc<Controller>, String> {
         maintenance: Mutex::new(()),
         setup_running: AtomicBool::new(false),
         update_running: AtomicBool::new(false),
+        update_cancel: AtomicBool::new(false),
         updates_scheduled: AtomicBool::new(false),
         tray_created: AtomicBool::new(false),
         shutdown: AtomicBool::new(false),
@@ -448,8 +478,12 @@ async fn start_existing_install(app: AppHandle, controller: Arc<Controller>) {
             format!("Desktop shortcut could not be published: {error}"),
         );
     }
-    updates::schedule(app.clone(), controller.clone());
-    let _ = service::start(app, controller, true, true).await;
+    if service::start(app.clone(), controller.clone(), true, true)
+        .await
+        .is_ok()
+    {
+        updates::schedule(app, controller);
+    }
 }
 
 async fn run_setup_smoke(app: AppHandle, controller: Arc<Controller>) {
@@ -539,12 +573,24 @@ fn build_prompt_window(app: &AppHandle, prompt: &str) -> Result<(), String> {
     Ok(())
 }
 
+fn build_and_show_prompt(app: &AppHandle, prompt: &str) -> Result<(), String> {
+    build_prompt_window(app, prompt)?;
+    let window = app
+        .get_webview_window("prompt")
+        .ok_or_else(|| "The prompt window could not be created.".to_owned())?;
+    window.unminimize().map_err(|error| error.to_string())?;
+    window.show().map_err(|error| error.to_string())?;
+    window.set_focus().map_err(|error| error.to_string())
+}
+
 pub(crate) fn show_update_prompt(app: &AppHandle) {
     if let Some(window) = app.get_webview_window("prompt") {
+        let _ = app.emit("ui://update-prompt", ());
+        let _ = window.unminimize();
         let _ = window.show();
         let _ = window.set_focus();
     } else {
-        let _ = build_prompt_window(app, "update");
+        let _ = build_and_show_prompt(app, "update");
     }
 }
 
@@ -605,10 +651,12 @@ pub fn run() {
             open_logs,
             get_recent_logs,
             check_updates,
-            set_auto_download,
+            set_auto_check_dsh_updates,
             set_locale,
             respond_to_update,
             dismiss_update_notice,
+            pause_update,
+            show_update_notice,
             show_exit_prompt,
             request_main_close,
             cancel_setup_and_exit,
