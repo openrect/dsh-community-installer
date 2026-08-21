@@ -4,7 +4,7 @@
 
 <h1 align="center">DSH Community Installer - Unofficial</h1>
 
-<p align="center">A clean, lightweight way to install and keep upstream DSH current on Windows.</p>
+<p align="center">A clean Windows installer and update companion for DeepSeek Harness (DSH), the open-source plugin-based agent harness.</p>
 
 <p align="center">
   <a href="https://github.com/openrect/dsh-community-installer/releases"><img src="https://img.shields.io/github/v/release/openrect/dsh-community-installer?style=flat-square&label=release&color=4D6BFE" alt="Release" /></a>
@@ -18,7 +18,18 @@
 
 <p align="center"><img src="assets/readme-hero.svg" width="1100" alt="DSH Community Installer for Windows" /></p>
 
-<p align="center"><strong>≈ 3.8 MB online setup · Private Node.js runtime · Verified DSH packages · Built-in updates</strong></p>
+<p align="center"><strong>≈ 3.8 MB online setup · Private Node.js runtime · Official DSH package · Automatic update checks</strong></p>
+
+## DeepSeek Harness, ready on Windows
+
+[DeepSeek Harness](https://deepseek.com/harness/en/) (`dsh`) is DeepSeek AI's open-source, plugin-based agent harness for building and running agents. Models, tools, skills, sessions, sandboxes, storage, loops, scheduling, and the UI are composed as plugins.
+
+The official quick start is `npx @deepseek-ai/dsh web`. This project installs the same official npm package into a private Windows runtime, manages the local service from a lightweight tray, and opens the upstream Web UI in your default browser. It does not change your system Node.js installation or upstream DSH data.
+
+<p align="center">
+  <a href="https://deepseek.com/harness/en/"><img src="https://deepseek.com/harness/images/harness/feat-plugin.en.png" width="900" alt="DeepSeek Harness Web UI showing its plugin management interface" /></a>
+</p>
+<p align="center"><sub>Upstream DeepSeek Harness Web UI · image from the official DeepSeek Harness website</sub></p>
 
 ## Why this installer
 
@@ -27,7 +38,7 @@
 | **Clean by default** | Installs upstream DSH without API keys or third-party plugins, and leaves the system Node.js installation and `%USERPROFILE%\.dsh` untouched. |
 | **Small online setup** | The Windows installer is about 3.8 MB. It uses the system WebView2 runtime and downloads only the pinned runtime components during first setup. |
 | **Self-contained runtime** | DSH runs with a private, verified Node.js `24.19.0` environment under `%LOCALAPPDATA%\DSHCommunityInstaller`. |
-| **Controlled updates** | The tray checks both the installer and DSH. Updates download only after confirmation and switch versions only after validation. |
+| **Updates without reinstalling** | Automatic checks are enabled by default. A new version is downloaded only after confirmation, validated separately, and activated without replacing a working version first. |
 
 ## Download
 
@@ -42,11 +53,21 @@ Choose the online edition for normal use. It installs DSH with a private Node.js
 
 ## How it works
 
-1. The online setup installs the newest compatible official DSH release once. The offline setup imports its pinned runtime seed.
+1. The online setup installs the newest compatible official DSH release from npm. The offline setup imports its pinned runtime seed and can update when it later has network access.
 2. The lightweight Tauri tray starts Harness only on `127.0.0.1:3080`, captures logs, and opens the upstream interface in the default browser.
 3. Update checks distinguish installer releases from DSH releases. After confirmation, DSH is installed in a fresh directory, validated, and atomically activated with rollback on failure.
 
 The tray also provides English/Chinese switching, logs, manual update checks, and a single clear exit action. Uninstall removes the private runtime and logs while preserving upstream DSH settings and sessions.
+
+## Automatic updates, under your control
+
+- **Automatic checks:** enabled by default and run when Harness starts; the tray also offers a manual check at any time.
+- **Future DSH releases:** checks the official npm `latest` and `next` channels and selects the highest version compatible with the bundled Node.js runtime.
+- **No silent installation:** when an update is available, the installer asks first and starts the download only after confirmation.
+- **Safe activation:** the new DSH version is installed with private pnpm, shown with live progress, validated, and then switched atomically. A failed candidate leaves the current version available.
+- **Installer updates:** the Windows controller checks its own signed update feed separately from upstream DSH updates.
+
+This makes the project both a DeepSeek Harness Windows installer and a small DSH update manager; routine upstream releases do not require downloading the full installer again.
 
 ## Project status
 

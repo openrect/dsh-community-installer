@@ -1,6 +1,6 @@
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1200 560" role="img" aria-labelledby="title description">
   <title id="title">DSH Community Installer</title>
-  <desc id="description">A clean, lightweight Windows installer for upstream DSH.</desc>
+  <desc id="description">A clean Windows installer and update companion for DeepSeek Harness.</desc>
   <defs>
     <linearGradient id="bg" x1="0" y1="0" x2="1200" y2="560" gradientUnits="userSpaceOnUse">
       <stop stop-color="#050b13"/><stop offset=".58" stop-color="#081525"/><stop offset="1" stop-color="#0a3158"/>
@@ -23,14 +23,14 @@
     <text x="103" y="67" fill="#f8fbff" font-size="18" font-weight="600" letter-spacing="2">DSH COMMUNITY INSTALLER</text>
     <rect x="402" y="46" width="105" height="28" rx="14" fill="#101c2b" stroke="#cde1f2" stroke-opacity=".25"/>
     <text x="454.5" y="65" text-anchor="middle" fill="#a9bed1" font-size="12" font-weight="500" letter-spacing="1">UNOFFICIAL</text>
-    <text x="46" y="173" fill="#f8fbff" font-size="54" font-weight="600" letter-spacing="-2">Clean DSH setup.</text>
-    <text x="46" y="233" fill="#72b9ff" font-size="54" font-weight="600" letter-spacing="-2">Small by design.</text>
-    <text x="46" y="281" fill="#b1c0d0" font-size="16" font-weight="400">Private runtime, verified components, and no bundled</text>
-    <text x="46" y="307" fill="#b1c0d0" font-size="16" font-weight="400">third-party DSH plugins.</text>
+    <text x="46" y="173" fill="#f8fbff" font-size="50" font-weight="600" letter-spacing="-2">DeepSeek Harness.</text>
+    <text x="46" y="233" fill="#72b9ff" font-size="50" font-weight="600" letter-spacing="-2">Clean Windows setup.</text>
+    <text x="46" y="281" fill="#b1c0d0" font-size="16" font-weight="400">Small installer, private runtime, official DSH package,</text>
+    <text x="46" y="307" fill="#b1c0d0" font-size="16" font-weight="400">and user-controlled automatic updates.</text>
     <g font-size="14">
       <g><rect x="46" y="342" width="146" height="104" rx="15" fill="#0c1725" fill-opacity=".88" stroke="#c3def6" stroke-opacity=".18"/><text x="62" y="374" fill="#f8fbff" font-weight="600">Clean install</text><text x="62" y="402" fill="#8fa3b8">No API keys or</text><text x="62" y="423" fill="#8fa3b8">bundled plugins.</text></g>
-      <g><rect x="204" y="342" width="146" height="104" rx="15" fill="#0c1725" fill-opacity=".88" stroke="#c3def6" stroke-opacity=".18"/><text x="220" y="374" fill="#f8fbff" font-weight="600">Small online setup</text><text x="220" y="402" fill="#8fa3b8">Only verified</text><text x="220" y="423" fill="#8fa3b8">components.</text></g>
-      <g><rect x="362" y="342" width="146" height="104" rx="15" fill="#0c1725" fill-opacity=".88" stroke="#c3def6" stroke-opacity=".18"/><text x="378" y="374" fill="#f8fbff" font-weight="600">Controlled updates</text><text x="378" y="402" fill="#8fa3b8">Stage, verify,</text><text x="378" y="423" fill="#8fa3b8">then activate.</text></g>
+      <g><rect x="204" y="342" width="146" height="104" rx="15" fill="#0c1725" fill-opacity=".88" stroke="#c3def6" stroke-opacity=".18"/><text x="220" y="374" fill="#f8fbff" font-weight="600">Online or offline</text><text x="220" y="402" fill="#8fa3b8">Small download</text><text x="220" y="423" fill="#8fa3b8">or offline runtime.</text></g>
+      <g><rect x="362" y="342" width="146" height="104" rx="15" fill="#0c1725" fill-opacity=".88" stroke="#c3def6" stroke-opacity=".18"/><text x="378" y="374" fill="#f8fbff" font-weight="600">Automatic checks</text><text x="378" y="402" fill="#8fa3b8">Confirm, install,</text><text x="378" y="423" fill="#8fa3b8">validate, activate.</text></g>
       <g fill="#c1cfdd"><rect x="46" y="472" width="132" height="34" rx="15" fill="#0a131f" stroke="#c3def6" stroke-opacity=".2"/><text x="112" y="494" text-anchor="middle">Windows 10 / 11</text><rect x="188" y="472" width="70" height="34" rx="15" fill="#0a131f" stroke="#c3def6" stroke-opacity=".2"/><text x="223" y="494" text-anchor="middle">Online</text><rect x="268" y="472" width="72" height="34" rx="15" fill="#0a131f" stroke="#c3def6" stroke-opacity=".2"/><text x="304" y="494" text-anchor="middle">Offline</text><rect x="350" y="472" width="72" height="34" rx="15" fill="#0a131f" stroke="#c3def6" stroke-opacity=".2"/><text x="386" y="494" text-anchor="middle">Tauri 2</text></g>
     </g>
     <g transform="translate(588 68) rotate(-1 286 190)" filter="url(#shadow)">
