@@ -7,6 +7,7 @@ fn main() {
             .expect("parse build-config.json");
     for (field, environment) in [
         ("nodeVersion", "DSH_NODE_VERSION"),
+        ("pnpmVersion", "DSH_PNPM_VERSION"),
         ("nodeArchiveSha256", "DSH_NODE_ARCHIVE_SHA256"),
         ("dshVersion", "DSH_UPSTREAM_VERSION"),
         ("architecture", "DSH_RUNTIME_ARCHITECTURE"),
@@ -16,6 +17,17 @@ fn main() {
             .unwrap_or_else(|| panic!("build-config.json is missing {field}"));
         println!("cargo:rustc-env={environment}={value}");
     }
+    let dist_tags = config["dshDistTags"]
+        .as_array()
+        .filter(|tags| !tags.is_empty())
+        .unwrap_or_else(|| panic!("build-config.json is missing dshDistTags"));
+    if !dist_tags.iter().all(|tag| tag.as_str().is_some()) {
+        panic!("build-config.json dshDistTags must contain only strings");
+    }
+    println!(
+        "cargo:rustc-env=DSH_DIST_TAGS={}",
+        serde_json::to_string(dist_tags).expect("serialize dshDistTags")
+    );
     println!("cargo:rerun-if-changed={}", config_path.display());
     tauri_build::build()
 }

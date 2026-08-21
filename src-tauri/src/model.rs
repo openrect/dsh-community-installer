@@ -2,7 +2,9 @@ use serde::{Deserialize, Serialize};
 
 pub const APP_VERSION: &str = env!("CARGO_PKG_VERSION");
 pub const DSH_VERSION: &str = env!("DSH_UPSTREAM_VERSION");
+pub const DSH_DIST_TAGS: &str = env!("DSH_DIST_TAGS");
 pub const NODE_VERSION: &str = env!("DSH_NODE_VERSION");
+pub const PNPM_VERSION: &str = env!("DSH_PNPM_VERSION");
 pub const HARNESS_URL: &str = "http://127.0.0.1:3080";
 
 #[derive(Clone, Copy, Debug, Default, Deserialize, Serialize, PartialEq, Eq)]
@@ -78,6 +80,12 @@ pub struct UpdateState {
     pub phase: UpdatePhase,
     pub version: Option<String>,
     pub progress: Option<f64>,
+    pub resolved_items: Option<u64>,
+    pub reused_items: Option<u64>,
+    pub downloaded_items: Option<u64>,
+    pub added_items: Option<u64>,
+    pub total_items: Option<u64>,
+    pub elapsed_seconds: Option<u64>,
     pub message_key: String,
 }
 
@@ -89,7 +97,7 @@ pub struct AppSnapshot {
     pub node_version: String,
     pub locale: Locale,
     pub edition: Edition,
-    pub auto_download: bool,
+    pub auto_check_dsh_updates: bool,
     pub setup_phase: SetupPhase,
     pub service_phase: ServicePhase,
     pub setup_complete: bool,
@@ -102,7 +110,7 @@ impl AppSnapshot {
     pub fn new(
         locale: Locale,
         edition: Edition,
-        auto_download: bool,
+        auto_check_dsh_updates: bool,
         setup_complete: bool,
     ) -> Self {
         Self {
@@ -111,7 +119,7 @@ impl AppSnapshot {
             node_version: NODE_VERSION.to_owned(),
             locale,
             edition,
-            auto_download,
+            auto_check_dsh_updates,
             setup_phase: if setup_complete {
                 SetupPhase::Complete
             } else {
@@ -138,6 +146,12 @@ pub struct SetupProgress {
     pub percent: f64,
     pub message_key: String,
     pub detail: Option<String>,
+    pub resolved_items: Option<u64>,
+    pub reused_items: Option<u64>,
+    pub downloaded_items: Option<u64>,
+    pub added_items: Option<u64>,
+    pub total_items: Option<u64>,
+    pub elapsed_seconds: Option<u64>,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]

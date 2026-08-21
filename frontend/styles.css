@@ -66,7 +66,7 @@ button:focus-visible { outline: 2px solid var(--focus); outline-offset: 2px; }
 .progress-track { height: 6px; margin: 30px 0 12px; overflow: hidden; border: 1px solid rgba(210, 233, 252, 0.12); border-radius: var(--radius); background: rgba(133, 177, 212, 0.15); }
 .progress-bar { height: 100%; border-radius: var(--radius); background: linear-gradient(90deg, var(--accent), var(--accent-bright)); box-shadow: 0 0 16px rgba(91, 157, 255, 0.55); transition: width 0.38s ease; }
 .progress-track.indeterminate .progress-bar { width: 34% !important; animation: progress-indeterminate 1.35s ease-in-out infinite; transition: none; }
-.progress-value { color: var(--muted); text-align: right; font-size: var(--text-caption); font-variant-numeric: tabular-nums; }
+.progress-value { color: var(--muted); text-align: right; font-size: var(--text-caption); font-variant-numeric: tabular-nums; white-space: nowrap; }
 .center-actions { display: flex; justify-content: center; gap: 10px; margin-top: 24px; }
 .success-mark { width: 52px; height: 52px; display: grid; place-items: center; margin-bottom: 20px; border: 1px solid rgba(158, 239, 209, 0.38); border-radius: var(--radius); color: #94e9c8; background: rgba(49, 139, 106, 0.14); font-size: var(--text-title); font-weight: var(--weight-semibold); }
 .button-row { display: flex; justify-content: flex-end; gap: 10px; margin-top: 24px; }
@@ -78,7 +78,10 @@ button:focus-visible { outline: 2px solid var(--focus); outline-offset: 2px; }
 .tray-item { width: 100%; min-height: 34px; display: flex; align-items: center; gap: 10px; padding: 0 12px; border: 0; border-radius: var(--radius); color: #fff; background: transparent; font-size: var(--text-body); font-weight: var(--weight-regular); text-align: left; }
 .tray-item:hover, .tray-item:focus-visible { background: rgba(116, 137, 158, 0.22); }
 .tray-toggle { justify-content: space-between; }
-.check { width: 18px; height: 18px; display: grid; place-items: center; border-radius: var(--radius); color: #fff; background: var(--accent); font-size: var(--text-caption); font-weight: var(--weight-semibold); }
+.switch { position: relative; width: 40px; height: 22px; flex: 0 0 40px; padding: 2px; border: 1px solid rgba(205, 222, 237, 0.26); border-radius: var(--radius); background: rgba(5, 15, 25, 0.64); box-shadow: inset 0 1px 2px rgba(0, 0, 0, 0.28); transition: border-color 0.18s ease, background 0.18s ease; }
+.switch-knob { display: block; width: 16px; height: 16px; border-radius: var(--radius); background: #c9d7e3; box-shadow: 0 2px 7px rgba(0, 7, 16, 0.42); transition: transform 0.18s ease, background 0.18s ease; }
+.switch.active { border-color: rgba(116, 190, 255, 0.72); background: linear-gradient(90deg, #3f72ed, var(--accent)); box-shadow: 0 0 12px rgba(79, 132, 255, 0.25); }
+.switch.active .switch-knob { transform: translateX(18px); background: #fff; }
 .locale-toggle { height: 34px; display: grid; grid-template-columns: 1fr 1fr; gap: 2px; margin: 6px 4px; padding: 2px; border: 1px solid rgba(205, 222, 237, 0.24); border-radius: var(--radius); background: rgba(4, 12, 21, 0.44); }
 .locale-toggle button { border: 0; border-radius: var(--radius); color: var(--muted); background: transparent; font-size: var(--text-body); font-weight: var(--weight-medium); }
 .locale-toggle button.active { color: #fff; background: var(--accent); }

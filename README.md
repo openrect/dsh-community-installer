@@ -27,24 +27,24 @@
 | **Clean by default** | Installs upstream DSH without API keys or third-party plugins, and leaves the system Node.js installation and `%USERPROFILE%\.dsh` untouched. |
 | **Small online setup** | The Windows installer is about 3.8 MB. It uses the system WebView2 runtime and downloads only the pinned runtime components during first setup. |
 | **Self-contained runtime** | DSH runs with a private, verified Node.js `24.19.0` environment under `%LOCALAPPDATA%\DSHCommunityInstaller`. |
-| **Controlled updates** | The tray checks both the installer and DSH. Installer updates download only after confirmation; DSH updates are staged and validated before activation. |
+| **Controlled updates** | The tray checks both the installer and DSH. Updates download only after confirmation and switch versions only after validation. |
 
 ## Download
 
 | Platform | Edition | Approx. size | Download |
 | --- | --- | ---: | --- |
-| Windows 10/11 x64 | Online — recommended | 3.8 MB | [DSH-Community-Setup-0.4.3-Windows-x64.exe](https://github.com/openrect/dsh-community-installer/releases/download/v0.4.3/DSH-Community-Setup-0.4.3-Windows-x64.exe) |
-| Windows 10/11 x64 | Offline | 95 MB | [DSH-Community-Offline-Setup-0.4.3-Windows-x64.exe](https://github.com/openrect/dsh-community-installer/releases/download/v0.4.3/DSH-Community-Offline-Setup-0.4.3-Windows-x64.exe) |
+| Windows 10/11 x64 | Online — recommended | 3.8 MB | [DSH-Community-Setup-0.4.6-Windows-x64.exe](https://github.com/openrect/dsh-community-installer/releases/download/v0.4.6/DSH-Community-Setup-0.4.6-Windows-x64.exe) |
+| Windows 10/11 x64 | Offline | 95 MB | [DSH-Community-Offline-Setup-0.4.6-Windows-x64.exe](https://github.com/openrect/dsh-community-installer/releases/download/v0.4.6/DSH-Community-Offline-Setup-0.4.6-Windows-x64.exe) |
 | macOS | Online | — | Coming soon |
 | macOS | Offline | — | Coming soon |
 
-Choose the online edition for normal use. The offline edition carries the same private runtime for machines that cannot reach Node.js or npm. Both editions require Microsoft Edge WebView2, which is normally present on Windows 10/11. Sizes are rounded and may change slightly between releases.
+Choose the online edition for normal use. It installs DSH with a private Node.js runtime and pinned pnpm through Corepack. The offline edition carries the same prepared runtime for machines that cannot reach the Node.js distribution or npm registry. Both editions require Microsoft Edge WebView2, which is normally present on Windows 10/11. Sizes are rounded and may change slightly between releases.
 
 ## How it works
 
-1. The setup app installs the pinned Node.js runtime and locked `@deepseek-ai/dsh@0.1.0-rc.7` package after verifying the downloaded components.
+1. The online setup installs the newest compatible official DSH release once. The offline setup imports its pinned runtime seed.
 2. The lightweight Tauri tray starts Harness only on `127.0.0.1:3080`, captures logs, and opens the upstream interface in the default browser.
-3. Update checks distinguish installer releases from DSH releases. DSH updates are downloaded with install scripts disabled, checked against a fixed script policy, validated, and then activated.
+3. Update checks distinguish installer releases from DSH releases. After confirmation, DSH is installed in a fresh directory, validated, and atomically activated with rollback on failure.
 
 The tray also provides English/Chinese switching, logs, manual update checks, and a single clear exit action. Uninstall removes the private runtime and logs while preserving upstream DSH settings and sessions.
 
@@ -66,7 +66,7 @@ pnpm build:online
 pnpm build:offline
 ```
 
-`pnpm test` runs the frontend tests, visual-token checks, and Rust tests. `pnpm release` prepares both installers, SHA-256 files, and signed Tauri updater artifacts.
+`pnpm test` runs the frontend and Rust tests plus release consistency checks. `pnpm release` prepares both installers, SHA-256 files, and signed Tauri updater artifacts.
 
 ## License
 

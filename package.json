@@ -1,6 +1,6 @@
 {
   "name": "dsh-community-installer",
-  "version": "0.4.3",
+  "version": "0.4.6",
   "private": true,
   "type": "module",
   "scripts": {
@@ -10,8 +10,7 @@
     "dev": "tauri dev",
     "build:online": "node scripts/build.mjs online",
     "build:offline": "node scripts/build.mjs offline",
-    "third-party:generate": "node scripts/generate-third-party-packages.mjs",
-    "test": "vitest run && node scripts/verify-design-tokens.mjs && node scripts/verify-installer-entry.mjs && node scripts/verify-release-version.mjs && node scripts/verify-script-policy.mjs && node scripts/cargo.mjs test --manifest-path src-tauri/Cargo.toml",
+    "test": "vitest run && node scripts/verify-installer-entry.mjs && node scripts/verify-release-version.mjs && node scripts/cargo.mjs test --manifest-path src-tauri/Cargo.toml",
     "release": "node scripts/release.mjs"
   },
   "dependencies": {

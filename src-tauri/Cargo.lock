@@ -942,7 +942,7 @@ dependencies = [
 
 [[package]]
 name = "dsh-community-installer"
-version = "0.4.3"
+version = "0.4.6"
 dependencies = [
  "chrono",
  "fs2",

@@ -4,12 +4,12 @@ import { getCurrentWindow } from "@tauri-apps/api/window";
 import type { AppState, Locale, LogLine, ServiceState, SetupProgress, UpdateDecision, UpdateState } from "./types";
 
 const mockState: AppState = {
-  appVersion: "0.4.3",
+  appVersion: "0.4.6",
   dshVersion: "0.1.0-rc.7",
   nodeVersion: "24.19.0",
   locale: "en-US",
   edition: "online",
-  autoDownload: true,
+  autoCheckDshUpdates: true,
   setupPhase: "not-installed",
   servicePhase: "stopped",
   setupComplete: false,
@@ -81,11 +81,13 @@ export const api = {
   openLogs: () => command<void>("open_logs"),
   recentLogs: () => command<LogLine[]>("get_recent_logs"),
   checkUpdates: () => command<void>("check_updates", { manual: true }),
-  autoDownload: (enabled: boolean) => command<void>("set_auto_download", { enabled }),
+  autoCheckDshUpdates: (enabled: boolean) => command<void>("set_auto_check_dsh_updates", { enabled }),
   locale: (locale: Locale) => command<void>("set_locale", { locale }),
   updateDecision: (target: string, version: string, decision: UpdateDecision) =>
     command<void>("respond_to_update", { target, version, decision }),
   dismissUpdate: () => command<void>("dismiss_update_notice"),
+  pauseUpdate: () => command<void>("pause_update"),
+  showUpdate: () => command<void>("show_update_notice"),
   exit: () => command<void>("exit_harness"),
   requestMainClose: () => command<void>("request_main_close"),
   cancelSetup: () => command<void>("cancel_setup_and_exit"),
@@ -104,6 +106,7 @@ export const api = {
   onService: (handler: (event: ServiceState) => void) => subscribe("service://state", handler),
   onLog: (handler: (event: LogLine) => void) => subscribe("log://line", handler),
   onUpdate: (handler: (event: UpdateState) => void) => subscribe("update://state", handler),
+  onUpdatePrompt: (handler: () => void) => subscribe("ui://update-prompt", handler),
   onExitPrompt: (handler: () => void) => subscribe("ui://exit-prompt", handler),
   onCancelSetup: (handler: () => void) => subscribe("ui://cancel-setup", handler),
   onRefresh: (handler: () => void) => subscribe("ui://refresh", handler),
