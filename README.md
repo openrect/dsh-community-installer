@@ -27,9 +27,9 @@
 The official quick start is `npx @deepseek-ai/dsh web`. This project installs the same official npm package into a private Windows runtime, manages the local service from a lightweight tray, and opens the upstream Web UI in your default browser. It does not change your system Node.js installation or upstream DSH data.
 
 <p align="center">
-  <a href="https://deepseek.com/harness/en/"><img src="https://deepseek.com/harness/images/harness/feat-plugin.en.png" width="900" alt="DeepSeek Harness Web UI showing its plugin management interface" /></a>
+  <img src="assets/dsh-main-interface.png" width="1100" alt="DeepSeek Harness main workspace after installation" />
 </p>
-<p align="center"><sub>Upstream DeepSeek Harness Web UI · image from the official DeepSeek Harness website</sub></p>
+<p align="center"><sub>DeepSeek Harness main workspace</sub></p>
 
 ## Why this installer
 

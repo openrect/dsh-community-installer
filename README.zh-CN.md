@@ -27,9 +27,9 @@
 官方快速启动命令是 `npx @deepseek-ai/dsh web`。本项目将同一个官方 npm 软件包安装到 Windows 独立运行环境，通过轻量托盘管理本地服务，并在默认浏览器中打开上游 Web UI。它不修改系统 Node.js，也不改动上游 DSH 用户数据。
 
 <p align="center">
-  <a href="https://deepseek.com/harness/"><img src="https://deepseek.com/harness/images/harness/feat-plugin.png" width="900" alt="DeepSeek Harness Web UI 的插件管理界面" /></a>
+  <img src="assets/dsh-main-interface.png" width="1100" alt="安装后的 DeepSeek Harness 主界面" />
 </p>
-<p align="center"><sub>上游 DeepSeek Harness Web UI · 图片来自 DeepSeek Harness 官方网站</sub></p>
+<p align="center"><sub>DeepSeek Harness 主界面</sub></p>
 
 ## 为什么使用它
 
